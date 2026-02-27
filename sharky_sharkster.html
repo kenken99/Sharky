@@ -1,0 +1,2306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sharky Sharkster</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0a0a2e;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  font-family: monospace;
+  overflow: hidden;
+}
+#gameCanvas {
+  border: 3px solid #1a3a6a;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: none;
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// ============================================================
+//  SHARKY SHARKSTER - A Shark Shark Tribute
+// ============================================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Game dimensions
+const GW = 640;
+const GH = 480;
+canvas.width = GW;
+canvas.height = GH;
+
+// Scale canvas to fit window
+function resizeCanvas() {
+  const scale = Math.min(window.innerWidth / GW, window.innerHeight / GH) * 0.95;
+  canvas.style.width = (GW * scale) + 'px';
+  canvas.style.height = (GH * scale) + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// ============================================================
+//  AUDIO ENGINE (Web Audio API)
+// ============================================================
+let audioCtx = null;
+let masterGain = null;
+let musicGain = null;
+let sfxGain = null;
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.5;
+  masterGain.connect(audioCtx.destination);
+  musicGain = audioCtx.createGain();
+  musicGain.gain.value = 0.3;
+  musicGain.connect(masterGain);
+  sfxGain = audioCtx.createGain();
+  sfxGain.gain.value = 0.6;
+  sfxGain.connect(masterGain);
+}
+
+function playNote(freq, duration, type = 'square', gainNode = sfxGain, vol = 0.3, detune = 0) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  osc.detune.value = detune;
+  g.gain.setValueAtTime(vol, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  osc.connect(g);
+  g.connect(gainNode);
+  osc.start(audioCtx.currentTime);
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+function playNoteAt(freq, startTime, duration, type = 'square', gainNode = musicGain, vol = 0.15) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(0, startTime);
+  g.gain.linearRampToValueAtTime(vol, startTime + 0.02);
+  g.gain.setValueAtTime(vol, startTime + duration - 0.05);
+  g.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+  osc.connect(g);
+  g.connect(gainNode);
+  osc.start(startTime);
+  osc.stop(startTime + duration + 0.05);
+}
+
+// Sound Effects
+function sfxEat() {
+  playNote(520, 0.08, 'square', sfxGain, 0.25);
+  setTimeout(() => playNote(780, 0.1, 'square', sfxGain, 0.25), 50);
+  setTimeout(() => playNote(1040, 0.12, 'square', sfxGain, 0.2), 100);
+}
+
+function sfxGrow() {
+  const notes = [262, 330, 392, 523, 659, 784];
+  notes.forEach((n, i) => {
+    setTimeout(() => playNote(n, 0.15, 'square', sfxGain, 0.2), i * 60);
+  });
+}
+
+function sfxDeath() {
+  const notes = [400, 350, 300, 250, 200, 150];
+  notes.forEach((n, i) => {
+    setTimeout(() => playNote(n, 0.2, 'sawtooth', sfxGain, 0.3), i * 100);
+  });
+}
+
+function sfxSharkWarning() {
+  for (let i = 0; i < 3; i++) {
+    setTimeout(() => {
+      playNote(180, 0.15, 'sawtooth', sfxGain, 0.3);
+    }, i * 200);
+  }
+}
+
+function sfxBubble() {
+  playNote(1200 + Math.random() * 800, 0.06, 'sine', sfxGain, 0.07);
+}
+
+function sfxSharkDefeat() {
+  const notes = [523, 659, 784, 1047, 784, 1047, 1319];
+  notes.forEach((n, i) => {
+    setTimeout(() => playNote(n, 0.2, 'square', sfxGain, 0.25), i * 80);
+  });
+}
+
+function sfxBounce() {
+  playNote(300, 0.08, 'triangle', sfxGain, 0.3);
+  setTimeout(() => playNote(400, 0.1, 'triangle', sfxGain, 0.2), 40);
+}
+
+function sfxPowerUp() {
+  const notes = [523, 659, 784, 1047, 1319, 1568];
+  notes.forEach((n, i) => {
+    setTimeout(() => playNote(n, 0.18, 'sine', sfxGain, 0.25), i * 50);
+  });
+}
+function sfxDart() {
+  playNote(350, 0.06, 'sawtooth', sfxGain, 0.12);
+  setTimeout(() => playNote(500, 0.06, 'sawtooth', sfxGain, 0.10), 30);
+  setTimeout(() => playNote(650, 0.04, 'triangle', sfxGain, 0.08), 60);
+}
+
+// Music System
+let currentMusic = null;
+let musicPlaying = false;
+let musicTimeout = null;
+
+const NOTE_FREQS = {
+  C3: 130.81, D3: 146.83, E3: 164.81, F3: 174.61, G3: 196.00, A3: 220.00, B3: 246.94,
+  C4: 261.63, D4: 293.66, E4: 329.63, F4: 349.23, G4: 392.00, A4: 440.00, B4: 493.88,
+  C5: 523.25, D5: 587.33, E5: 659.25, F5: 698.46, G5: 783.99, A5: 880.00, B5: 987.77,
+  C6: 1046.50
+};
+
+// Upbeat jaunty melody
+const HAPPY_MELODY = [
+  ['C5',0.15],['E5',0.15],['G5',0.15],['E5',0.15],['C5',0.15],['G4',0.15],['C5',0.3],
+  ['D5',0.15],['F5',0.15],['A5',0.15],['F5',0.15],['D5',0.15],['A4',0.15],['D5',0.3],
+  ['E5',0.15],['G5',0.15],['B5',0.15],['G5',0.15],['E5',0.15],['B4',0.15],['E5',0.3],
+  ['C5',0.15],['E5',0.15],['G5',0.3],['E5',0.15],['C5',0.3],['G4',0.15],['C5',0.3],
+  ['A4',0.15],['C5',0.15],['E5',0.15],['C5',0.15],['A4',0.15],['E4',0.15],['A4',0.3],
+  ['G4',0.15],['B4',0.15],['D5',0.15],['B4',0.15],['G4',0.15],['D4',0.15],['G4',0.3],
+  ['C5',0.15],['D5',0.15],['E5',0.15],['G5',0.15],['E5',0.15],['D5',0.15],['C5',0.6],
+];
+
+const HAPPY_BASS = [
+  ['C3',0.3],['C3',0.3],['G3',0.3],['G3',0.3],
+  ['D3',0.3],['D3',0.3],['A3',0.3],['A3',0.3],
+  ['E3',0.3],['E3',0.3],['B3',0.3],['B3',0.3],
+  ['C3',0.3],['G3',0.3],['C3',0.3],['G3',0.3],
+  ['A3',0.3],['A3',0.3],['E3',0.3],['E3',0.3],
+  ['G3',0.3],['G3',0.3],['D3',0.3],['D3',0.3],
+  ['C3',0.3],['D3',0.3],['E3',0.3],['C3',0.6],['C3',0.15],
+];
+
+// Jaws-style shark theme (E-F pattern, building tension)
+const SHARK_MELODY = [
+  ['E3',0.4],['F3',0.4],['E3',0.35],['F3',0.35],['E3',0.3],['F3',0.3],
+  ['E3',0.25],['F3',0.25],['E3',0.2],['F3',0.2],['E3',0.15],['F3',0.15],
+  ['E3',0.12],['F3',0.12],['E3',0.1],['F3',0.1],['E3',0.1],['F3',0.1],
+  ['E3',0.4],['F3',0.4],
+];
+
+const SHARK_BASS = [
+  ['E3',0.8],['E3',0.7],['E3',0.6],['E3',0.5],['E3',0.4],
+  ['E3',0.3],['E3',0.22],['E3',0.2],['E3',0.8],
+];
+
+function playMusicLoop(melody, bass, type = 'happy') {
+  if (!audioCtx || !musicPlaying) return;
+  const now = audioCtx.currentTime + 0.05;
+  let melodyTime = now;
+  melody.forEach(([note, dur]) => {
+    if (NOTE_FREQS[note]) {
+      playNoteAt(NOTE_FREQS[note], melodyTime, dur * 0.9, 'square', musicGain, type === 'shark' ? 0.18 : 0.12);
+    }
+    melodyTime += dur;
+  });
+  let bassTime = now;
+  bass.forEach(([note, dur]) => {
+    if (NOTE_FREQS[note]) {
+      playNoteAt(NOTE_FREQS[note], bassTime, dur * 0.85, 'triangle', musicGain, type === 'shark' ? 0.12 : 0.08);
+    }
+    bassTime += dur;
+  });
+  const loopDuration = Math.max(melodyTime, bassTime) - now;
+  musicTimeout = setTimeout(() => {
+    if (musicPlaying) {
+      if (currentMusic === 'shark') {
+        playMusicLoop(SHARK_MELODY, SHARK_BASS, 'shark');
+      } else {
+        playMusicLoop(HAPPY_MELODY, HAPPY_BASS, 'happy');
+      }
+    }
+  }, loopDuration * 1000 - 50);
+}
+
+function startMusic(type = 'happy') {
+  if (currentMusic === type && musicPlaying) return;
+  stopMusic();
+  currentMusic = type;
+  musicPlaying = true;
+  if (type === 'shark') {
+    playMusicLoop(SHARK_MELODY, SHARK_BASS, 'shark');
+  } else {
+    playMusicLoop(HAPPY_MELODY, HAPPY_BASS, 'happy');
+  }
+}
+
+function stopMusic() {
+  musicPlaying = false;
+  if (musicTimeout) {
+    clearTimeout(musicTimeout);
+    musicTimeout = null;
+  }
+  currentMusic = null;
+}
+
+// ============================================================
+//  PIXEL ART SPRITE SYSTEM
+// ============================================================
+const spriteCache = {};
+
+function createSprite(width, height, drawFunc) {
+  const key = drawFunc.toString();
+  if (spriteCache[key]) return spriteCache[key];
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = height;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+  drawFunc(cx, width, height);
+  spriteCache[key] = c;
+  return c;
+}
+
+function drawPixel(cx, x, y, color, size = 1) {
+  cx.fillStyle = color;
+  cx.fillRect(x * size, y * size, size, size);
+}
+
+function drawPixels(cx, pixels, size = 2) {
+  pixels.forEach(([x, y, color]) => drawPixel(cx, x, y, color, size));
+}
+
+// Player fish sprites at different sizes
+function createPlayerFish(sizeLevel, frame, facingLeft) {
+  const sizes = [
+    { w: 16, h: 10 },
+    { w: 20, h: 13 },
+    { w: 26, h: 16 },
+    { w: 32, h: 20 },
+    { w: 40, h: 24 },
+    { w: 48, h: 28 },
+  ];
+  const s = sizes[sizeLevel] || sizes[0];
+  const ps = 2;
+  const cw = s.w * ps;
+  const ch = s.h * ps;
+  const key = `player_${sizeLevel}_${frame}_${facingLeft}`;
+  if (spriteCache[key]) return spriteCache[key];
+
+  const c = document.createElement('canvas');
+  c.width = cw;
+  c.height = ch;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  // Colors based on size
+  const bodyColors = [
+    ['#FFD700', '#FFA500', '#FF8C00'], // gold/orange tiny
+    ['#FFD700', '#FFA500', '#FF6347'], // gold/orange/red
+    ['#FF6347', '#FF4500', '#CD3700'], // red/orange
+    ['#FF4500', '#FF2200', '#CC1100'], // deeper red
+    ['#E02020', '#CC0000', '#990000'], // bold red
+    ['#FF1493', '#FF0066', '#CC0044'], // hot pink champion
+  ];
+  const [bodyLight, bodyMid, bodyDark] = bodyColors[sizeLevel] || bodyColors[0];
+  const bellyColor = '#FFF8DC';
+  const eyeWhite = '#FFFFFF';
+  const eyePupil = '#111111';
+  const finColor = bodyDark;
+  const tailColor = bodyMid;
+
+  const hw = Math.floor(s.w / 2);
+  const hh = Math.floor(s.h / 2);
+
+  // Draw fish body (elliptical)
+  for (let y = 0; y < s.h; y++) {
+    for (let x = 0; x < s.w; x++) {
+      const nx = (x - hw) / hw;
+      const ny = (y - hh) / hh;
+      const dist = nx * nx + ny * ny;
+      // Body shape (oval, wider in front)
+      const bodyWidth = 1.0 - Math.abs(nx) * 0.15;
+      if (dist < bodyWidth) {
+        let color;
+        if (ny > 0.2) color = bellyColor;
+        else if (ny > -0.2) color = bodyLight;
+        else color = bodyMid;
+        // Darker outline
+        if (dist > bodyWidth - 0.2) color = bodyDark;
+        drawPixel(cx, x, y, color, ps);
+      }
+    }
+  }
+
+  // Tail
+  const tailX = facingLeft ? s.w - 3 : 1;
+  const tailDir = facingLeft ? 1 : -1;
+  const tailWag = Math.sin(frame * 0.5) * 1.5;
+  for (let i = 0; i < 4; i++) {
+    drawPixel(cx, tailX + tailDir * i, hh - 2 + tailWag - i, tailColor, ps);
+    drawPixel(cx, tailX + tailDir * i, hh + 2 + tailWag + i, tailColor, ps);
+    drawPixel(cx, tailX + tailDir * i, hh + tailWag, finColor, ps);
+  }
+
+  // Dorsal fin
+  const finWag = Math.sin(frame * 0.3) * 0.5;
+  for (let i = 0; i < 3; i++) {
+    drawPixel(cx, hw - 1 + i, 1 + finWag, finColor, ps);
+    if (i < 2) drawPixel(cx, hw + i, 0 + finWag, finColor, ps);
+  }
+
+  // Eye
+  const eyeX = facingLeft ? Math.floor(s.w * 0.2) : Math.floor(s.w * 0.7);
+  const eyeY = hh - 1;
+  drawPixel(cx, eyeX, eyeY, eyeWhite, ps);
+  drawPixel(cx, eyeX + 1, eyeY, eyeWhite, ps);
+  drawPixel(cx, eyeX, eyeY + 1, eyeWhite, ps);
+  drawPixel(cx, eyeX + 1, eyeY + 1, eyeWhite, ps);
+  const pupilOff = facingLeft ? 0 : 1;
+  drawPixel(cx, eyeX + pupilOff, eyeY, eyePupil, ps);
+  drawPixel(cx, eyeX + pupilOff, eyeY + 1, eyePupil, ps);
+
+  // Mouth
+  const mouthX = facingLeft ? 1 : s.w - 3;
+  const mouthOpen = frame % 20 < 10;
+  if (mouthOpen) {
+    drawPixel(cx, mouthX, hh, '#CC0000', ps);
+    drawPixel(cx, mouthX + (facingLeft ? 1 : -1), hh, '#CC0000', ps);
+  }
+
+  // Cute blush marks
+  const blushX = facingLeft ? Math.floor(s.w * 0.25) : Math.floor(s.w * 0.65);
+  drawPixel(cx, blushX, hh + 1, '#FF8888', ps);
+  drawPixel(cx, blushX + 1, hh + 1, '#FF8888', ps);
+
+  spriteCache[key] = c;
+  return c;
+}
+
+// Color palettes: highlight, body, shadow, outline (4-tone shading)
+const FISH_PALETTES = [
+  { hi: '#AAFFAA', body: '#44CC44', shad: '#228822', out: '#115511', belly: '#DDFFD8' }, // green
+  { hi: '#AAD4FF', body: '#4488DD', shad: '#2255AA', out: '#113366', belly: '#D0E8FF' }, // blue
+  { hi: '#FFAACC', body: '#EE5588', shad: '#BB2255', out: '#771133', belly: '#FFD8E8' }, // pink
+  { hi: '#FFEEAA', body: '#EECC33', shad: '#BB9900', out: '#776600', belly: '#FFF8D0' }, // yellow
+  { hi: '#AAFFEE', body: '#33CCAA', shad: '#1A9977', out: '#0A6644', belly: '#D0FFF0' }, // teal
+  { hi: '#FFCCAA', body: '#EE8833', shad: '#CC5500', out: '#883300', belly: '#FFE8D0' }, // orange
+  { hi: '#DDBBFF', body: '#9955DD', shad: '#6633AA', out: '#441177', belly: '#F0E0FF' }, // purple
+  { hi: '#FFBBBB', body: '#DD4444', shad: '#AA2222', out: '#661111', belly: '#FFD8D8' }, // red
+  { hi: '#BBFFFF', body: '#44BBCC', shad: '#228899', out: '#115566', belly: '#D8FFFF' }, // cyan
+  { hi: '#FFD4AA', body: '#DD8855', shad: '#AA5533', out: '#773311', belly: '#FFEEDD' }, // brown
+  { hi: '#EECCFF', body: '#CC77DD', shad: '#9944AA', out: '#662277', belly: '#F8E8FF' }, // magenta
+  { hi: '#CCFFCC', body: '#77BB55', shad: '#448833', out: '#225511', belly: '#E8FFE0' }, // olive
+];
+
+// Fish body shapes for variety
+const FISH_SHAPES = ['normal', 'round', 'sleek', 'tall'];
+
+// Sprite size definitions per size level (pixel dimensions before ps multiply)
+const FISH_SIZE_DEFS = [
+  { w: 10, h: 6  }, // size 0: tiny
+  { w: 14, h: 10 }, // size 1: small
+  { w: 20, h: 13 }, // size 2: medium
+  { w: 27, h: 17 }, // size 3: large
+  { w: 36, h: 22 }, // size 4: huge
+  { w: 43, h: 25 }, // size 5: giant
+];
+
+// Enemy fish with proper pixel art anatomy
+function createEnemyFish(type, frame, facingLeft, colorIdx, patternIdx) {
+  const sizeDef = FISH_SIZE_DEFS[type] || FISH_SIZE_DEFS[0];
+  const pal = FISH_PALETTES[colorIdx % FISH_PALETTES.length];
+  const shape = FISH_SHAPES[patternIdx % FISH_SHAPES.length];
+  const ps = 2;
+  const key = `enemy_${type}_${colorIdx}_${patternIdx}_${frame % 8}_${facingLeft}`;
+  if (spriteCache[key]) return { canvas: spriteCache[key], w: sizeDef.w * ps, h: sizeDef.h * ps };
+
+  const c = document.createElement('canvas');
+  c.width = sizeDef.w * ps;
+  c.height = sizeDef.h * ps;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const W = sizeDef.w;
+  const H = sizeDef.h;
+  const hh = Math.floor(H / 2);
+
+  // Body profile function: returns half-height at each x-position
+  // t goes from 0 (mouth) to 1 (tail end)
+  function bodyProfile(t) {
+    let h;
+    if (shape === 'round') {
+      // Rounder, pufferfish-like
+      h = Math.sin(t * Math.PI) * 0.95;
+      if (t < 0.15) h *= t / 0.15;
+    } else if (shape === 'sleek') {
+      // Elongated, tuna-like
+      const peak = 0.35;
+      if (t < peak) h = Math.sin((t / peak) * Math.PI * 0.5) * 0.7;
+      else h = Math.cos(((t - peak) / (1 - peak)) * Math.PI * 0.45) * 0.7;
+      if (t < 0.08) h *= t / 0.08;
+    } else if (shape === 'tall') {
+      // Taller, angelfish-like
+      const peak = 0.4;
+      if (t < peak) h = Math.sin((t / peak) * Math.PI * 0.5) * 1.0;
+      else h = Math.cos(((t - peak) / (1 - peak)) * Math.PI * 0.4) * 1.0;
+      if (t < 0.1) h *= t / 0.1;
+    } else {
+      // Normal teardrop fish
+      const peak = 0.38;
+      if (t < peak) h = Math.sin((t / peak) * Math.PI * 0.5) * 0.85;
+      else h = Math.cos(((t - peak) / (1 - peak)) * Math.PI * 0.42) * 0.85;
+      if (t < 0.1) h *= t / 0.1;
+    }
+    return Math.max(0, h);
+  }
+
+  // Tail wag animation
+  const tailWag = Math.sin(frame * 0.5) * 1.5;
+
+  // === PASS 1: Draw body fill with shading ===
+  // Reserve ~20% width for tail fin
+  const bodyEnd = Math.floor(W * 0.78);
+  const tailStart = bodyEnd;
+
+  for (let px = 0; px < bodyEnd; px++) {
+    const t = facingLeft ? px / bodyEnd : 1 - px / bodyEnd;
+    const profile = bodyProfile(t);
+    const halfH = Math.floor(profile * hh);
+    if (halfH <= 0) continue;
+
+    for (let dy = -halfH; dy <= halfH; dy++) {
+      const py = hh + dy;
+      if (py < 0 || py >= H) continue;
+      const normalY = dy / halfH; // -1 top to 1 bottom
+      const edgeDist = Math.abs(dy) / halfH;
+
+      let color;
+      // 4-tone shading: outline -> shadow -> body -> highlight -> belly
+      if (edgeDist > 0.85) {
+        color = pal.out; // outline edge
+      } else if (normalY > 0.4) {
+        color = pal.belly; // white belly
+      } else if (normalY > 0.0) {
+        color = pal.shad; // lower body shadow
+      } else if (normalY > -0.5) {
+        color = pal.body; // main body color
+      } else {
+        color = pal.hi; // top highlight
+      }
+
+      // Outline at horizontal extremes too
+      if (t < 0.06 || t > 0.95) color = pal.out;
+
+      // Stripe pattern (every other fish shape has stripes)
+      if (shape === 'normal' || shape === 'tall') {
+        const stripeT = facingLeft ? px : (bodyEnd - 1 - px);
+        if (stripeT % 6 < 2 && edgeDist < 0.7 && Math.abs(normalY) < 0.6) {
+          color = pal.shad;
+        }
+      }
+
+      drawPixel(cx, px, py, color, ps);
+    }
+  }
+
+  // === PASS 2: Outline the body top and bottom edges ===
+  for (let px = 0; px < bodyEnd; px++) {
+    const t = facingLeft ? px / bodyEnd : 1 - px / bodyEnd;
+    const profile = bodyProfile(t);
+    const halfH = Math.floor(profile * hh);
+    if (halfH <= 0) continue;
+    // Top outline
+    if (hh - halfH >= 0) drawPixel(cx, px, hh - halfH, pal.out, ps);
+    // Bottom outline
+    if (hh + halfH < H) drawPixel(cx, px, hh + halfH, pal.out, ps);
+  }
+
+  // === PASS 3: Caudal (tail) fin - fan/V shape ===
+  const tailFanLen = W - tailStart;
+  const tailBaseY = hh + tailWag * 0.2;
+  for (let i = 0; i < tailFanLen; i++) {
+    const tx = facingLeft ? tailStart + i : (W - 1 - tailStart) - i;
+    if (tx < 0 || tx >= W) continue;
+    const progress = i / tailFanLen;
+    const spread = progress * (hh * 0.8);
+    // Upper lobe
+    for (let dy = -1; dy <= 1; dy++) {
+      const ty = Math.floor(tailBaseY - 1 - spread + dy);
+      if (ty >= 0 && ty < H) {
+        drawPixel(cx, tx, ty, dy === 0 ? pal.body : (progress > 0.7 ? pal.hi : pal.shad), ps);
+      }
+    }
+    // Lower lobe
+    for (let dy = -1; dy <= 1; dy++) {
+      const ty = Math.floor(tailBaseY + 1 + spread + dy);
+      if (ty >= 0 && ty < H) {
+        drawPixel(cx, tx, ty, dy === 0 ? pal.body : (progress > 0.7 ? pal.hi : pal.shad), ps);
+      }
+    }
+    // Fill between lobes near the stalk
+    if (progress < 0.5) {
+      const topY = Math.ceil(tailBaseY - 1 - spread);
+      const botY = Math.floor(tailBaseY + 1 + spread);
+      for (let fy = topY; fy <= botY; fy++) {
+        if (fy >= 0 && fy < H) drawPixel(cx, tx, fy, pal.body, ps);
+      }
+    }
+    // Outline
+    const topEdge = Math.floor(tailBaseY - 1 - spread);
+    const botEdge = Math.floor(tailBaseY + 2 + spread);
+    if (topEdge >= 0) drawPixel(cx, tx, topEdge, pal.out, ps);
+    if (botEdge < H) drawPixel(cx, tx, botEdge, pal.out, ps);
+  }
+
+  // === PASS 4: Dorsal fin (triangle on top, all sizes) ===
+  const dorsalX = facingLeft ? Math.floor(bodyEnd * 0.35) : Math.floor(W - bodyEnd * 0.35);
+  const dorsalH = Math.max(2, Math.floor(H * 0.22));
+  const dorsalW = Math.max(2, Math.floor(W * 0.18));
+  const dorsalT = facingLeft ? dorsalX / bodyEnd : 1 - dorsalX / bodyEnd;
+  const dorsalBaseY = hh - Math.floor(bodyProfile(dorsalT) * hh);
+  for (let i = 0; i < dorsalH; i++) {
+    const width = Math.max(1, Math.floor(dorsalW * (1 - i / dorsalH)));
+    for (let dx = 0; dx < width; dx++) {
+      const fx = dorsalX - Math.floor(width / 2) + dx;
+      const fy = dorsalBaseY - 1 - i;
+      if (fx >= 0 && fx < W && fy >= 0) {
+        drawPixel(cx, fx, fy, (dx === 0 || dx === width - 1 || i === dorsalH - 1) ? pal.out : pal.shad, ps);
+      }
+    }
+  }
+
+  // === PASS 5: Pectoral fin (small paddle on side) ===
+  if (type >= 1) {
+    const pfinX = facingLeft ? Math.floor(bodyEnd * 0.45) : Math.floor(W - bodyEnd * 0.45);
+    const pfinT = facingLeft ? pfinX / bodyEnd : 1 - pfinX / bodyEnd;
+    const pfinBaseY = hh + Math.floor(bodyProfile(pfinT) * hh * 0.5);
+    const pfinLen = Math.max(2, Math.floor(W * 0.12));
+    const pfinDir = facingLeft ? 1 : -1;
+    for (let i = 0; i < pfinLen; i++) {
+      const pfx = pfinX + pfinDir * i;
+      if (pfx >= 0 && pfx < W) {
+        drawPixel(cx, pfx, pfinBaseY + i, pal.shad, ps);
+        if (i > 0) drawPixel(cx, pfx, pfinBaseY + i - 1, pal.body, ps);
+        drawPixel(cx, pfx, pfinBaseY + i + 1, pal.out, ps);
+      }
+    }
+  }
+
+  // === PASS 6: Eye (large, expressive with white, pupil, highlight) ===
+  const eyeX = facingLeft ? Math.floor(bodyEnd * 0.18) : Math.floor(W - bodyEnd * 0.18);
+  const eyeY = hh - Math.max(1, Math.floor(H * 0.08));
+  const eyeR = type >= 3 ? 2 : (type >= 1 ? 1.5 : 1);
+  // White of eye
+  const eyePixels = eyeR >= 2 ? 2 : (eyeR >= 1.5 ? 2 : 1);
+  for (let ey = 0; ey < eyePixels; ey++) {
+    for (let ex = 0; ex < eyePixels; ex++) {
+      if (eyeX + ex >= 0 && eyeX + ex < W && eyeY + ey >= 0 && eyeY + ey < H) {
+        drawPixel(cx, eyeX + ex, eyeY + ey, '#FFFFFF', ps);
+      }
+    }
+  }
+  // Dark pupil (front side of eye)
+  const pupilX = facingLeft ? eyeX : eyeX + eyePixels - 1;
+  if (pupilX >= 0 && pupilX < W) {
+    drawPixel(cx, pupilX, eyeY, '#111122', ps);
+    if (eyePixels > 1 && eyeY + 1 < H) drawPixel(cx, pupilX, eyeY + 1, '#222233', ps);
+  }
+  // Highlight sparkle (top-back of eye)
+  const hlX = facingLeft ? eyeX + eyePixels - 1 : eyeX;
+  if (hlX >= 0 && hlX < W && eyeY >= 0) {
+    drawPixel(cx, hlX, eyeY, '#FFFFFF', ps);
+  }
+
+  // === PASS 7: Mouth ===
+  const mouthEdge = facingLeft ? 0 : W - 1;
+  const mouthT = facingLeft ? 0 : 1;
+  // Small open mouth at the front
+  if (bodyProfile(0.02) * hh >= 1) {
+    drawPixel(cx, mouthEdge, hh, pal.out, ps);
+    if (frame % 16 < 8 && type >= 2) {
+      // Animated mouth open
+      drawPixel(cx, mouthEdge, hh - 1, pal.out, ps);
+    }
+  }
+
+  spriteCache[key] = c;
+  return { canvas: c, w: sizeDef.w * ps, h: sizeDef.h * ps };
+}
+
+// Shark sprite
+function createShark(frame, facingLeft) {
+  const sw = 120;
+  const sh = 48;
+  const ps = 2;
+  const key = `shark_${frame % 12}_${facingLeft}`;
+  if (spriteCache[key]) return { canvas: spriteCache[key], w: sw * ps, h: sh * ps };
+
+  const c = document.createElement('canvas');
+  c.width = sw * ps;
+  c.height = sh * ps;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const hh = Math.floor(sh / 2); // vertical center = 24
+
+  // Body layout: head at front 0-25%, body 25-70%, tail 70-100%
+  // facingLeft: head at low x, tail at high x
+  // facingRight: head at high x, tail at low x
+  const headEnd = facingLeft ? Math.floor(sw * 0.28) : Math.floor(sw * 0.72);
+  const bodyEnd = facingLeft ? Math.floor(sw * 0.72) : Math.floor(sw * 0.28);
+  const bodyCenter = facingLeft ? Math.floor(sw * 0.40) : Math.floor(sw * 0.60);
+
+  // Draw shark body using a custom shape (not a simple ellipse)
+  for (let x = 0; x < sw; x++) {
+    // Calculate how wide the body is at each x-position
+    let bodyHalfHeight = 0;
+    let t; // 0 = nose tip, 1 = tail tip
+
+    if (facingLeft) {
+      t = x / sw; // 0=left(nose) to 1=right(tail)
+    } else {
+      t = 1 - x / sw; // reversed
+    }
+
+    // Shape profile: nose tapers to point, body widest at ~35%, tapers to nothing by ~68% (tail draws separately)
+    if (t < 0.05) {
+      bodyHalfHeight = t * 60; // sharp nose point
+    } else if (t < 0.35) {
+      bodyHalfHeight = 3 + (t - 0.05) / 0.30 * (hh * 0.75 - 3); // widen to max
+    } else if (t < 0.68) {
+      bodyHalfHeight = hh * 0.75 - (t - 0.35) / 0.33 * (hh * 0.75); // taper to zero by 68%
+    } else {
+      bodyHalfHeight = 0; // no body here - tail zone only
+    }
+
+    bodyHalfHeight = Math.max(0, Math.floor(bodyHalfHeight));
+
+    for (let dy = -bodyHalfHeight; dy <= bodyHalfHeight; dy++) {
+      const y = hh + dy;
+      if (y < 0 || y >= sh) continue;
+      const edgeDist = Math.abs(dy) / Math.max(bodyHalfHeight, 1);
+      let color;
+      if (dy > bodyHalfHeight * 0.3) color = '#E8E8E8'; // white belly
+      else if (edgeDist > 0.8) color = '#3A3A5A'; // dark outline
+      else if (dy < -bodyHalfHeight * 0.2) color = '#4A5A7A'; // darker top
+      else color = '#5A6A8A'; // blue-grey main
+      drawPixel(cx, x, y, color, ps);
+    }
+  }
+
+  // Dorsal fin (triangular, menacing) - positioned at ~30% from head
+  const finX = facingLeft ? Math.floor(sw * 0.30) : Math.floor(sw * 0.70);
+  const finWag = Math.sin(frame * 0.2) * 0.5;
+  for (let i = 0; i < 12; i++) {
+    for (let j = 0; j < 12 - i; j++) {
+      const fx = finX - 3 + j;
+      const fy = hh - Math.floor(sh * 0.75 * 0.75) - i + finWag;
+      if (fx >= 0 && fx < sw && fy >= 0) {
+        drawPixel(cx, fx, fy, i < 2 ? '#2A2A4A' : '#3A3A5A', ps);
+      }
+    }
+  }
+
+  // Pectoral fins (small, on each side at ~40%)
+  const pfinX = facingLeft ? Math.floor(sw * 0.42) : Math.floor(sw * 0.58);
+  for (let i = 0; i < 6; i++) {
+    const pfDir = facingLeft ? 1 : -1;
+    drawPixel(cx, pfinX + pfDir * i, hh + 8 + i, '#4A5A7A', ps);
+    drawPixel(cx, pfinX + pfDir * i, hh + 9 + i, '#3A3A5A', ps);
+  }
+
+  // === TAIL FIN - Large, prominent forked caudal fin ===
+  const tailWag = Math.sin(frame * 0.4) * 3;
+  const tailStart = facingLeft ? Math.floor(sw * 0.63) : Math.floor(sw * 0.37);
+  const td = facingLeft ? 1 : -1;
+
+  // Tail stalk (narrow connecting piece from body to fork, 8 pixels long)
+  for (let i = 0; i < 8; i++) {
+    const tx = tailStart + td * i;
+    // Stalk narrows from 3px to 2px height
+    const stalkH = Math.max(1, 3 - Math.floor(i / 3));
+    for (let dy = -stalkH; dy <= stalkH; dy++) {
+      if (tx >= 0 && tx < sw) {
+        drawPixel(cx, tx, hh + dy + tailWag * 0.3, dy === 0 ? '#5A6A8A' : '#4A5A7A', ps);
+      }
+    }
+  }
+
+  // Upper fork of tail (sweeps up and back)
+  for (let i = 0; i < 20; i++) {
+    const tx = tailStart + td * (8 + i);
+    if (tx < 0 || tx >= sw) continue;
+    const spread = i * 0.9;
+    const thickness = Math.max(1, 4 - Math.floor(i / 6));
+    for (let dy = 0; dy < thickness; dy++) {
+      const ty = Math.floor(hh - 1 - spread + tailWag + dy);
+      if (ty >= 0 && ty < sh) {
+        const color = dy === 0 ? '#6A7A9A' : (i > 16 ? '#8A9ABA' : '#4A5A7A');
+        drawPixel(cx, tx, ty, color, ps);
+      }
+    }
+  }
+
+  // Lower fork of tail (sweeps down and back)
+  for (let i = 0; i < 20; i++) {
+    const tx = tailStart + td * (8 + i);
+    if (tx < 0 || tx >= sw) continue;
+    const spread = i * 0.9;
+    const thickness = Math.max(1, 4 - Math.floor(i / 6));
+    for (let dy = 0; dy < thickness; dy++) {
+      const ty = Math.floor(hh + 1 + spread + tailWag - dy);
+      if (ty >= 0 && ty < sh) {
+        const color = dy === 0 ? '#6A7A9A' : (i > 16 ? '#8A9ABA' : '#4A5A7A');
+        drawPixel(cx, tx, ty, color, ps);
+      }
+    }
+  }
+
+  // Tail fork center fill (the area between the two forks near the stalk)
+  for (let i = 0; i < 10; i++) {
+    const tx = tailStart + td * (8 + i);
+    if (tx < 0 || tx >= sw) continue;
+    const upperY = hh - 1 - i * 0.9 + tailWag;
+    const lowerY = hh + 1 + i * 0.9 + tailWag;
+    for (let y = Math.ceil(upperY); y <= Math.floor(lowerY); y++) {
+      if (y >= 0 && y < sh) {
+        drawPixel(cx, tx, y, '#5A6A8A', ps);
+      }
+    }
+  }
+
+  // Eye (menacing, red) - larger for bigger sprite
+  const eyeX = facingLeft ? Math.floor(sw * 0.10) : Math.floor(sw * 0.86);
+  for (let dy = -2; dy <= 1; dy++) {
+    for (let dx = 0; dx <= 2; dx++) {
+      drawPixel(cx, eyeX + dx, hh - 3 + dy, '#FFFFFF', ps);
+    }
+  }
+  // Red pupil
+  const pupilDx = facingLeft ? 0 : 2;
+  drawPixel(cx, eyeX + pupilDx, hh - 4, '#FF0000', ps);
+  drawPixel(cx, eyeX + pupilDx, hh - 3, '#CC0000', ps);
+  drawPixel(cx, eyeX + pupilDx + (facingLeft ? 1 : -1), hh - 4, '#DD0000', ps);
+  drawPixel(cx, eyeX + pupilDx + (facingLeft ? 1 : -1), hh - 3, '#AA0000', ps);
+
+  // Teeth - longer row for bigger mouth
+  const mouthY = hh + 3;
+  const mouthStart = facingLeft ? 4 : sw - 22;
+  for (let i = 0; i < 9; i++) {
+    const toothFrame = (frame % 4 < 2) ? 0 : 1;
+    drawPixel(cx, mouthStart + i * 2, mouthY + toothFrame, '#FFFFFF', ps);
+    drawPixel(cx, mouthStart + i * 2, mouthY + 1 + toothFrame, '#FFFFFF', ps);
+    drawPixel(cx, mouthStart + i * 2, mouthY + 2, '#FF3333', ps);
+  }
+
+  // Gill slits - positioned and scaled
+  const gillX = facingLeft ? Math.floor(sw * 0.20) : Math.floor(sw * 0.74);
+  for (let i = 0; i < 4; i++) {
+    for (let dy = -3; dy <= 3; dy++) {
+      drawPixel(cx, gillX + i * 3, hh + dy, '#3A3A5A', ps);
+    }
+  }
+
+  // Nose highlight
+  const noseX = facingLeft ? 2 : sw - 4;
+  drawPixel(cx, noseX, hh - 1, '#7A8AAA', ps);
+  drawPixel(cx, noseX, hh, '#7A8AAA', ps);
+
+  spriteCache[key] = c;
+  return { canvas: c, w: sw * ps, h: sh * ps };
+}
+
+// ============================================================
+//  PARTICLE SYSTEM
+// ============================================================
+const particles = [];
+
+function spawnBubble(x, y) {
+  particles.push({
+    type: 'bubble',
+    x, y,
+    vx: (Math.random() - 0.5) * 0.5,
+    vy: -1 - Math.random() * 1.5,
+    size: 2 + Math.random() * 4,
+    life: 60 + Math.random() * 60,
+    maxLife: 120,
+    alpha: 0.6,
+  });
+}
+
+function spawnEatParticles(x, y, color) {
+  for (let i = 0; i < 12; i++) {
+    const angle = (Math.PI * 2 / 12) * i;
+    particles.push({
+      type: 'sparkle',
+      x, y,
+      vx: Math.cos(angle) * (2 + Math.random() * 2),
+      vy: Math.sin(angle) * (2 + Math.random() * 2),
+      size: 3 + Math.random() * 3,
+      life: 20 + Math.random() * 15,
+      maxLife: 35,
+      color: color,
+      alpha: 1,
+    });
+  }
+}
+
+function spawnScorePopup(x, y, text) {
+  particles.push({
+    type: 'text',
+    x, y,
+    vx: 0,
+    vy: -1.5,
+    text: text,
+    life: 50,
+    maxLife: 50,
+    alpha: 1,
+  });
+}
+
+function spawnDeathParticles(x, y) {
+  for (let i = 0; i < 25; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 4;
+    particles.push({
+      type: 'sparkle',
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      size: 2 + Math.random() * 5,
+      life: 30 + Math.random() * 30,
+      maxLife: 60,
+      color: ['#FF4444', '#FFAA00', '#FFFFFF', '#FF8844'][Math.floor(Math.random() * 4)],
+      alpha: 1,
+    });
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life--;
+    p.alpha = Math.max(0, p.life / p.maxLife);
+    if (p.type === 'bubble') {
+      p.vx += (Math.random() - 0.5) * 0.1;
+      p.x += Math.sin(p.life * 0.15) * 0.3;
+    }
+    if (p.life <= 0) {
+      particles.splice(i, 1);
+    }
+  }
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.alpha;
+    if (p.type === 'bubble') {
+      ctx.strokeStyle = '#AADDFF';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(170,221,255,0.15)';
+      ctx.fill();
+      // Highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.beginPath();
+      ctx.arc(p.x - p.size * 0.3, p.y - p.size * 0.3, p.size * 0.25, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.type === 'sparkle') {
+      ctx.fillStyle = p.color;
+      const sz = p.size * p.alpha;
+      ctx.fillRect(p.x - sz / 2, p.y - sz / 2, sz, sz);
+    } else if (p.type === 'text') {
+      ctx.fillStyle = '#FFFF00';
+      ctx.font = 'bold 16px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.text, p.x, p.y);
+    }
+    ctx.globalAlpha = 1;
+  });
+}
+
+// ============================================================
+//  BACKGROUND RENDERING
+// ============================================================
+let bgCanvas = null;
+let bgLevel = -1; // track which level the background was built for
+
+// Lerp between two hex colors; t=0 returns a, t=1 returns b
+function lerpColor(a, b, t) {
+  const pa = [parseInt(a.slice(1,3),16), parseInt(a.slice(3,5),16), parseInt(a.slice(5,7),16)];
+  const pb = [parseInt(b.slice(1,3),16), parseInt(b.slice(3,5),16), parseInt(b.slice(5,7),16)];
+  const r = Math.round(pa[0] + (pb[0] - pa[0]) * t);
+  const g = Math.round(pa[1] + (pb[1] - pa[1]) * t);
+  const bl = Math.round(pa[2] + (pb[2] - pa[2]) * t);
+  return '#' + ((1<<24)|(r<<16)|(g<<8)|bl).toString(16).slice(1);
+}
+
+function createBackground() {
+  // Depth factor: 0 at level 1, ramps to 1 by level 6
+  const depth = Math.min(1, (level - 1) / 5);
+
+  bgCanvas = document.createElement('canvas');
+  bgCanvas.width = GW;
+  bgCanvas.height = GH;
+  bgLevel = level;
+  const bgx = bgCanvas.getContext('2d');
+
+  // Ocean gradient — shifts from blue-green to deep navy with depth
+  const grad = bgx.createLinearGradient(0, 0, 0, GH);
+  grad.addColorStop(0,   lerpColor('#1a6aaf', '#0a1230', depth));
+  grad.addColorStop(0.3, lerpColor('#0e4a7a', '#070e28', depth));
+  grad.addColorStop(0.6, lerpColor('#0a3460', '#050a1e', depth));
+  grad.addColorStop(1,   lerpColor('#061a30', '#020612', depth));
+  bgx.fillStyle = grad;
+  bgx.fillRect(0, 0, GW, GH);
+
+  // Light rays from surface — fade as water deepens
+  const rayAlpha = 0.06 * (1 - depth * 0.7);
+  bgx.globalAlpha = rayAlpha;
+  for (let i = 0; i < 8; i++) {
+    const x = 60 + i * 80;
+    bgx.fillStyle = lerpColor('#66bbff', '#223366', depth);
+    bgx.beginPath();
+    bgx.moveTo(x - 5, 0);
+    bgx.lineTo(x + 5, 0);
+    bgx.lineTo(x + 30 + Math.random() * 20, GH);
+    bgx.lineTo(x - 30 - Math.random() * 20, GH);
+    bgx.fill();
+  }
+  bgx.globalAlpha = 1;
+
+  // Sandy bottom — darkens with depth
+  const sandGrad = bgx.createLinearGradient(0, GH - 50, 0, GH);
+  sandGrad.addColorStop(0, '#2a1a0a00');
+  sandGrad.addColorStop(0.3, lerpColor('#3d2b1a', '#1a1210', depth));
+  sandGrad.addColorStop(1,   lerpColor('#5a4030', '#2a1a12', depth));
+  bgx.fillStyle = sandGrad;
+  bgx.fillRect(0, GH - 50, GW, 50);
+
+  // Sand texture
+  for (let i = 0; i < 200; i++) {
+    const sx = Math.random() * GW;
+    const sy = GH - 40 + Math.random() * 35;
+    bgx.fillStyle = Math.random() > 0.5
+      ? lerpColor('#6a5040', '#302018', depth)
+      : lerpColor('#4a3020', '#1a0e08', depth);
+    bgx.fillRect(sx, sy, 2, 2);
+  }
+
+  // Seaweed — darkens with depth
+  const seaweedColors = [
+    [lerpColor('#1a8a2a', '#0a3a12', depth),
+     lerpColor('#2a9a3a', '#0e4a18', depth),
+     lerpColor('#0a7a1a', '#06300e', depth)],
+  ];
+  for (let s = 0; s < 12; s++) {
+    const sx = 30 + s * 55 + Math.random() * 20;
+    const sheight = 40 + Math.random() * 60;
+    const baseY = GH - 35;
+    bgx.strokeStyle = seaweedColors[0][s % 3];
+    bgx.lineWidth = 3;
+    bgx.beginPath();
+    bgx.moveTo(sx, baseY);
+    for (let j = 0; j < sheight; j += 4) {
+      const wave = Math.sin(j * 0.1 + s) * 8;
+      bgx.lineTo(sx + wave, baseY - j);
+    }
+    bgx.stroke();
+
+    // Leaves
+    for (let l = 0; l < 3; l++) {
+      const ly = baseY - 15 - l * 15;
+      const ldir = l % 2 === 0 ? 1 : -1;
+      bgx.fillStyle = lerpColor('#2aaa3a', '#0e4a18', depth);
+      bgx.beginPath();
+      bgx.ellipse(sx + ldir * 6 + Math.sin(ly * 0.1) * 5, ly, 8, 3, ldir * 0.3, 0, Math.PI * 2);
+      bgx.fill();
+    }
+  }
+
+  // Coral pieces — muted as light fades
+  const coralBase = ['#FF6B6B', '#FF9F43', '#FECA57', '#FF6B81', '#EE5A24'];
+  const coralDark = ['#6B2020', '#6B4018', '#6B5520', '#6B2030', '#5A1A08'];
+  const coralColors = coralBase.map((c, i) => lerpColor(c, coralDark[i], depth));
+  for (let c = 0; c < 8; c++) {
+    const cx2 = 50 + c * 80 + Math.random() * 30;
+    const cy = GH - 38;
+    bgx.fillStyle = coralColors[c % coralColors.length];
+    // Branching coral
+    for (let b = 0; b < 5; b++) {
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * 1.2;
+      const len = 8 + Math.random() * 14;
+      const bx = cx2 + Math.cos(angle) * len;
+      const by = cy + Math.sin(angle) * len;
+      bgx.beginPath();
+      bgx.moveTo(cx2, cy);
+      bgx.lineTo(bx, by);
+      bgx.lineWidth = 3 + Math.random() * 2;
+      bgx.strokeStyle = coralColors[c % coralColors.length];
+      bgx.stroke();
+      // Tip
+      bgx.beginPath();
+      bgx.arc(bx, by, 3, 0, Math.PI * 2);
+      bgx.fill();
+    }
+  }
+
+  // Small rocks
+  for (let r = 0; r < 15; r++) {
+    const rx = Math.random() * GW;
+    const ry = GH - 30 + Math.random() * 15;
+    bgx.fillStyle = lerpColor('#5a5040', '#201a14', depth);
+    bgx.beginPath();
+    bgx.ellipse(rx, ry, 4 + Math.random() * 6, 3 + Math.random() * 3, 0, 0, Math.PI * 2);
+    bgx.fill();
+  }
+
+  // Shells
+  for (let sh = 0; sh < 5; sh++) {
+    const shx = 80 + sh * 130 + Math.random() * 40;
+    const shy = GH - 30 + Math.random() * 8;
+    bgx.fillStyle = lerpColor('#FFF0DB', '#5a4a38', depth);
+    bgx.beginPath();
+    bgx.arc(shx, shy, 4, Math.PI, 0);
+    bgx.fill();
+    bgx.strokeStyle = lerpColor('#DDB892', '#4a3828', depth);
+    bgx.lineWidth = 1;
+    bgx.stroke();
+    // Shell ridges
+    for (let i = 0; i < 3; i++) {
+      bgx.beginPath();
+      bgx.arc(shx, shy, 2 + i * 1, Math.PI + 0.3, -0.3);
+      bgx.stroke();
+    }
+  }
+}
+
+// Scrolling water caustics
+let causticOffset = 0;
+function drawCaustics() {
+  const depth = Math.min(1, (level - 1) / 5);
+  ctx.globalAlpha = 0.04 * (1 - depth * 0.7);
+  ctx.fillStyle = lerpColor('#66ccff', '#1a2a44', depth);
+  causticOffset += 0.3;
+  for (let y = 0; y < GH - 60; y += 40) {
+    for (let x = 0; x < GW; x += 40) {
+      const wx = x + Math.sin((y + causticOffset) * 0.05) * 15;
+      const wy = y + Math.cos((x + causticOffset) * 0.04) * 10;
+      ctx.beginPath();
+      ctx.moveTo(wx, wy);
+      ctx.lineTo(wx + 20, wy + 5);
+      ctx.lineTo(wx + 15, wy + 20);
+      ctx.lineTo(wx - 5, wy + 15);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ============================================================
+//  GAME STATE
+// ============================================================
+const STATE = {
+  TITLE: 0,
+  PLAYING: 1,
+  DYING: 2,
+  GAME_OVER: 3,
+  LEVEL_UP: 4,
+  PAUSED: 5,
+};
+
+let gameState = STATE.TITLE;
+let score = 0;
+let highScore = parseInt(localStorage.getItem('sharkyHighScore')) || 0;
+let lives = 3;
+let level = 1;
+let frameCount = 0;
+let sharkTimer = 0;
+let sharkActive = false;
+let dyingTimer = 0;
+let levelUpTimer = 0;
+let gameOverTimer = 0;
+let flashTimer = 0;
+let comboCount = 0;
+let comboTimer = 0;
+let sharkDefeats = 0;
+let sharkBitesThisPatrol = 0;
+
+// Power-up: Super Fishfood Jar
+const powerUp = {
+  active: false,
+  x: 0,
+  y: 0,
+  width: 16,
+  height: 24,
+  bobOffset: 0,
+  sparkleTimer: 0,
+};
+
+// Player
+const player = {
+  x: GW / 2,
+  y: GH / 2,
+  vx: 0,
+  vy: 0,
+  sizeLevel: 0,
+  eatCount: 0,
+  facingLeft: false,
+  invincible: 0,
+  width: 32,
+  height: 20,
+  dartCooldown: 0,   // frames until dart is available again
+  dartTimer: 0,      // frames remaining of active dart boost
+};
+
+const DART_BOOST = 10;        // speed burst on dart
+const DART_DURATION = 10;     // frames the boost lasts
+const DART_COOLDOWN = 54;    // frames before dart can be used again (~1.5s at 36fps)
+const DART_ENEMY_CHANCE = 0.0001; // chance per frame an enemy darts
+
+// Size thresholds
+const SIZE_THRESHOLDS = [0, 8, 20, 40, 70, 120];
+const SIZE_DIMENSIONS = [
+  { w: 32, h: 20 },
+  { w: 40, h: 26 },
+  { w: 52, h: 32 },
+  { w: 64, h: 40 },
+  { w: 80, h: 48 },
+  { w: 96, h: 56 },
+];
+
+// Enemy fish
+let enemies = [];
+const ENEMY_TYPES = [
+  { sizeLevel: 0, speed: 1.5, points: 10, w: 20, h: 12 },  // tiny
+  { sizeLevel: 1, speed: 1.2, points: 25, w: 28, h: 20 },  // small
+  { sizeLevel: 2, speed: 1.0, points: 50, w: 40, h: 26 },  // medium
+  { sizeLevel: 3, speed: 0.8, points: 100, w: 54, h: 34 },  // large
+  { sizeLevel: 4, speed: 0.6, points: 200, w: 72, h: 44 },  // huge
+  { sizeLevel: 5, speed: 0.5, points: 500, w: 86, h: 50 },  // giant
+];
+
+// Shark
+const shark = {
+  x: -200,
+  y: GH / 2,
+  vx: 0,
+  vy: 0,
+  facingLeft: true,
+  width: 200,
+  height: 75,
+  active: false,
+  hp: 3,
+  hitCooldown: 0,
+  chargeTimer: 0,
+  phase: 'enter', // enter, patrol, charge, exit
+};
+
+// Ambient bubbles
+const ambientBubbles = [];
+for (let i = 0; i < 8; i++) {
+  ambientBubbles.push({
+    x: Math.random() * GW,
+    y: Math.random() * GH,
+    speed: 0.3 + Math.random() * 0.5,
+    size: 2 + Math.random() * 4,
+    wobble: Math.random() * Math.PI * 2,
+  });
+}
+
+// Input
+const keys = {};
+window.addEventListener('keydown', (e) => {
+  keys[e.key.toLowerCase()] = true;
+  keys[e.code] = true;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+  // Start game on any key from title
+  if (gameState === STATE.TITLE && !audioStarted) {
+    initAudio();
+    audioStarted = true;
+  }
+  if (gameState === STATE.TITLE) {
+    startGame();
+  }
+  if (gameState === STATE.GAME_OVER && gameOverTimer <= 0) {
+    gameState = STATE.TITLE;
+  }
+});
+window.addEventListener('keyup', (e) => {
+  keys[e.key.toLowerCase()] = false;
+  keys[e.code] = false;
+});
+
+let audioStarted = false;
+
+// ============================================================
+//  GAME LOGIC
+// ============================================================
+function startGame() {
+  gameState = STATE.PLAYING;
+  score = 0;
+  lives = 5;
+  level = 1;
+  player.x = GW / 2;
+  player.y = GH / 2;
+  player.vx = 0;
+  player.vy = 0;
+  player.sizeLevel = 0;
+  player.eatCount = 0;
+  player.invincible = 60;
+  player.dartCooldown = 0;
+  player.dartTimer = 0;
+  player.width = SIZE_DIMENSIONS[0].w;
+  player.height = SIZE_DIMENSIONS[0].h;
+  enemies = [];
+  particles.length = 0;
+  sharkTimer = 600 + Math.random() * 300;
+  sharkActive = false;
+  shark.active = false;
+  comboCount = 0;
+  comboTimer = 0;
+  sharkDefeats = 0;
+  sharkBitesThisPatrol = 0;
+  powerUp.active = false;
+  flashTimer = 0;
+  startMusic('happy');
+}
+
+function spawnEnemy() {
+  // Determine which types can spawn based on player size
+  // Always allow fish up to 2 sizes above the player so all 6 types appear
+  const maxType = Math.min(5, player.sizeLevel + 2);
+  let type;
+  // Weight toward smaller fish
+  const roll = Math.random();
+  if (roll < 0.35) type = 0;
+  else if (roll < 0.6) type = Math.min(1, maxType);
+  else if (roll < 0.78) type = Math.min(2, maxType);
+  else if (roll < 0.9) type = Math.min(3, maxType);
+  else if (roll < 0.97) type = Math.min(4, maxType);
+  else type = Math.min(5, maxType);
+
+  const def = ENEMY_TYPES[type];
+  const fromLeft = Math.random() > 0.5;
+  const x = fromLeft ? -def.w : GW + def.w;
+  const y = 30 + Math.random() * (GH - 100);
+  const speed = def.speed * (0.8 + Math.random() * 0.4) * (1 + level * 0.05);
+
+  enemies.push({
+    x, y,
+    vx: fromLeft ? speed : -speed,
+    vy: (Math.random() - 0.5) * 0.5,
+    type,
+    width: def.w,
+    height: def.h,
+    facingLeft: !fromLeft,
+    frame: Math.random() * 100,
+    wobble: Math.random() * Math.PI * 2,
+    points: def.points,
+    sizeLevel: def.sizeLevel,
+    colorIdx: Math.floor(Math.random() * FISH_PALETTES.length),
+    patternIdx: Math.floor(Math.random() * FISH_SHAPES.length),
+    dartTimer: 0,
+  });
+}
+
+function updatePlayer() {
+  const accel = 0.45;
+  const maxSpeed = 3.5 + player.sizeLevel * 0.2;
+  const friction = 0.92;
+
+  if (keys['arrowleft'] || keys['a']) {
+    player.vx -= accel;
+    player.facingLeft = true;
+  }
+  if (keys['arrowright'] || keys['d']) {
+    player.vx += accel;
+    player.facingLeft = false;
+  }
+  if (keys['arrowup'] || keys['w']) player.vy -= accel;
+  if (keys['arrowdown'] || keys['s']) player.vy += accel;
+
+  // Dart (spacebar)
+  if (player.dartCooldown > 0) player.dartCooldown--;
+  if (player.dartTimer > 0) player.dartTimer--;
+
+  if ((keys[' '] || keys['Space']) && player.dartCooldown <= 0) {
+    // Determine dart direction from movement or facing
+    let dx = player.vx;
+    let dy = player.vy;
+    const mag = Math.sqrt(dx * dx + dy * dy);
+    if (mag > 0.3) {
+      dx /= mag; dy /= mag;
+    } else {
+      dx = player.facingLeft ? -1 : 1;
+      dy = 0;
+    }
+    player.vx += dx * DART_BOOST;
+    player.vy += dy * DART_BOOST;
+    player.dartTimer = DART_DURATION;
+    player.dartCooldown = DART_COOLDOWN;
+    sfxDart();
+    // Burst of bubbles behind the fish
+    const bx = player.facingLeft ? player.x + player.width / 2 : player.x - player.width / 2;
+    for (let b = 0; b < 4; b++) {
+      spawnBubble(bx + (Math.random() - 0.5) * 10, player.y + (Math.random() - 0.5) * 10);
+    }
+  }
+
+  // While darting, use less friction so speed carries
+  const activeFriction = player.dartTimer > 0 ? 0.97 : friction;
+  player.vx *= activeFriction;
+  player.vy *= activeFriction;
+
+  // Speed cap (higher during dart)
+  const dartMaxSpeed = player.dartTimer > 0 ? maxSpeed * 2.5 : maxSpeed;
+  const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+  if (speed > dartMaxSpeed) {
+    player.vx = (player.vx / speed) * dartMaxSpeed;
+    player.vy = (player.vy / speed) * dartMaxSpeed;
+  }
+
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // Boundaries
+  const hw = player.width / 2;
+  const hh = player.height / 2;
+  if (player.x < hw) { player.x = hw; player.vx *= -0.5; }
+  if (player.x > GW - hw) { player.x = GW - hw; player.vx *= -0.5; }
+  if (player.y < hh + 10) { player.y = hh + 10; player.vy *= -0.5; }
+  if (player.y > GH - 55 - hh) { player.y = GH - 55 - hh; player.vy *= -0.5; }
+
+  if (player.invincible > 0) player.invincible--;
+
+  // Bubble trail (more frequent while darting)
+  const bubbleRate = player.dartTimer > 0 ? 3 : 15;
+  if (frameCount % bubbleRate === 0 && (Math.abs(player.vx) > 0.5 || Math.abs(player.vy) > 0.5)) {
+    const bx = player.facingLeft ? player.x + hw : player.x - hw;
+    spawnBubble(bx, player.y);
+    if (Math.random() < 0.3) sfxBubble();
+  }
+}
+
+function updateEnemies() {
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+
+    // Enemy dart timer countdown
+    if (e.dartTimer > 0) e.dartTimer--;
+
+    // Random enemy dart — brief speed burst in their swim direction
+    if (!e.dartTimer && Math.random() < DART_ENEMY_CHANCE) {
+      const dir = e.vx >= 0 ? 1 : -1;
+      e.vx += dir * DART_BOOST * 0.6;
+      e.dartTimer = DART_DURATION;
+      // Bubbles behind darting enemy
+      const bx = dir < 0 ? e.x + e.width / 2 : e.x - e.width / 2;
+      spawnBubble(bx, e.y);
+    }
+
+    // Less friction during dart, normal otherwise
+    if (e.dartTimer > 0) {
+      e.vx *= 0.97;
+    }
+
+    e.x += e.vx;
+    e.y += e.vy;
+    e.frame++;
+    e.y += Math.sin(e.wobble + e.frame * 0.03) * 0.3;
+
+    // Slight y drift toward center
+    if (e.y < 40) e.vy += 0.01;
+    if (e.y > GH - 80) e.vy -= 0.01;
+
+    // Remove if off screen
+    if ((e.vx > 0 && e.x > GW + 100) || (e.vx < 0 && e.x < -100)) {
+      enemies.splice(i, 1);
+      continue;
+    }
+
+    // Bubble trail for bigger fish
+    if (e.type >= 3 && frameCount % 30 === 0) {
+      spawnBubble(e.x, e.y - e.height / 4);
+    }
+  }
+
+  // Spawn rate based on enemy count and level
+  const maxEnemies = 8 + level * 2;
+  if (enemies.length < maxEnemies && Math.random() < 0.02 + level * 0.005) {
+    spawnEnemy();
+  }
+}
+
+function checkCollisions() {
+  if (player.invincible > 0) return;
+
+  const px1 = player.x - player.width * 0.4;
+  const py1 = player.y - player.height * 0.4;
+  const px2 = player.x + player.width * 0.4;
+  const py2 = player.y + player.height * 0.4;
+
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    const ex1 = e.x - e.width * 0.4;
+    const ey1 = e.y - e.height * 0.4;
+    const ex2 = e.x + e.width * 0.4;
+    const ey2 = e.y + e.height * 0.4;
+
+    // AABB collision
+    if (px1 < ex2 && px2 > ex1 && py1 < ey2 && py2 > ey1) {
+      // Compare actual visual sizes to determine outcome
+      const playerArea = player.width * player.height;
+      const enemyArea = e.width * e.height;
+      const sizeRatio = playerArea / enemyArea;
+
+      if (sizeRatio > 1.15) {
+        // Player is clearly bigger - eat the fish!
+        eatFish(e, i);
+      } else if (sizeRatio < 0.85) {
+        // Enemy is clearly bigger - get eaten!
+        playerDeath();
+        return;
+      } else {
+        // Similar size - bounce off each other!
+        bounceFish(e);
+      }
+    }
+  }
+
+  // Shark collision
+  if (shark.active) {
+    const sx1 = shark.x - shark.width * 0.4;
+    const sy1 = shark.y - shark.height * 0.35;
+    const sx2 = shark.x + shark.width * 0.4;
+    const sy2 = shark.y + shark.height * 0.35;
+
+    if (px1 < sx2 && px2 > sx1 && py1 < sy2 && py2 > sy1) {
+      // Check if player is in the tail zone (behind the shark)
+      const tailZone = shark.facingLeft ?
+        (player.x > shark.x + shark.width * 0.1) :
+        (player.x < shark.x - shark.width * 0.1);
+      if (tailZone) {
+        // Player is at the tail - safe! Deal damage if cooldown allows
+        if (shark.hitCooldown <= 0) {
+          hitShark();
+        }
+        return; // Never die from tail contact
+      }
+      // Front/body collision - shark eats player
+      playerDeath();
+    }
+  }
+}
+
+function eatFish(e, index) {
+  enemies.splice(index, 1);
+
+  // Combo system
+  comboCount++;
+  comboTimer = 90; // 1.5 seconds
+  const comboMultiplier = Math.min(comboCount, 5);
+  const pts = e.points * comboMultiplier;
+  score += pts;
+
+  player.eatCount++;
+
+  // Check for size up
+  const nextSize = player.sizeLevel + 1;
+  if (nextSize < SIZE_THRESHOLDS.length && player.eatCount >= SIZE_THRESHOLDS[nextSize]) {
+    player.sizeLevel = nextSize;
+    player.width = SIZE_DIMENSIONS[nextSize].w;
+    player.height = SIZE_DIMENSIONS[nextSize].h;
+    sfxGrow();
+    levelUpTimer = 60;
+    spawnEatParticles(player.x, player.y, '#FFD700');
+    flashTimer = 20;
+
+    // Level advances with every size-up (levels 1-6)
+    level = nextSize + 1;
+  }
+
+  // Effects
+  sfxEat();
+  const pal = FISH_PALETTES[e.colorIdx % FISH_PALETTES.length];
+  spawnEatParticles(e.x, e.y, pal ? pal.body : '#FFFFFF');
+  const comboText = comboMultiplier > 1 ? `+${pts} x${comboMultiplier}!` : `+${pts}`;
+  spawnScorePopup(e.x, e.y - 20, comboText);
+}
+
+function bounceFish(e) {
+  // Push player and enemy apart
+  const dx = player.x - e.x;
+  const dy = player.y - e.y;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  const pushForce = 3.5;
+  const nx = dx / dist;
+  const ny = dy / dist;
+
+  // Push player away
+  player.vx = nx * pushForce;
+  player.vy = ny * pushForce;
+
+  // Push enemy away
+  e.vx = -nx * pushForce * 0.5 + (e.vx > 0 ? 0.5 : -0.5);
+
+  // Brief invincibility so they don't immediately re-collide
+  player.invincible = 15;
+
+  sfxBounce();
+  spawnScorePopup(
+    (player.x + e.x) / 2,
+    (player.y + e.y) / 2 - 15,
+    'BONK!'
+  );
+}
+
+function hitShark() {
+  // Damage scales with player size: bigger fish = more damage per bite
+  // Size 0 = 1 dmg, Size 1 = 2, Size 2 = 3, Size 3 = 4, Size 4 = 6, Size 5 = 8
+  const biteDamage = [1, 2, 3, 4, 6, 8][player.sizeLevel] || 1;
+  shark.hp -= biteDamage;
+  shark.hitCooldown = 60;
+  spawnEatParticles(shark.x, shark.y, '#FF4444');
+  sfxEat();
+
+  // Track bites this patrol for power-up trigger
+  sharkBitesThisPatrol++;
+  if (sharkBitesThisPatrol === 3 && !powerUp.active && player.sizeLevel < 5) {
+    spawnPowerUp();
+  }
+
+  if (shark.hp <= 0) {
+    // Shark defeated!
+    sharkDefeats++;
+    const sharkPts = 1000 * level;
+    score += sharkPts;
+    spawnScorePopup(shark.x, shark.y - 30, `+${sharkPts} SHARK!`);
+    spawnDeathParticles(shark.x, shark.y);
+    sfxSharkDefeat();
+    shark.active = false;
+    sharkActive = false;
+    sharkTimer = 800 + Math.random() * 400;
+    startMusic('happy');
+    flashTimer = 30;
+  } else {
+    spawnScorePopup(shark.x, shark.y - 20, `CHOMP! ${shark.hp} HP left`);
+    // Extend shark stay by 5 seconds (36fps * 5) so player can keep fighting
+    shark._stayTimer += 36 * 5;
+    // If shark was exiting, pull it back to patrol
+    if (shark.phase === 'exit') {
+      shark.phase = 'patrol';
+      const sharkSpeed = 0.75 + level * 0.075;
+      shark.vx = shark.facingLeft ? -sharkSpeed : sharkSpeed;
+      shark.vy = 0;
+      shark.chargeTimer = 80 + Math.random() * 80;
+    }
+    // Shark speeds up slightly when hit
+    shark.vx *= 1.15;
+  }
+}
+
+// ============================================================
+//  POWER-UP: Super Fishfood Jar
+// ============================================================
+function spawnPowerUp() {
+  powerUp.active = true;
+  // Random position away from screen edges and floor
+  powerUp.x = 80 + Math.random() * (GW - 160);
+  powerUp.y = 60 + Math.random() * (GH - 180);
+  powerUp.bobOffset = Math.random() * Math.PI * 2;
+  powerUp.sparkleTimer = 0;
+}
+
+function updatePowerUp() {
+  if (!powerUp.active) return;
+  powerUp.sparkleTimer++;
+  // Sparkle particles
+  if (powerUp.sparkleTimer % 12 === 0) {
+    const sx = powerUp.x + (Math.random() - 0.5) * 30;
+    const sy = powerUp.y + (Math.random() - 0.5) * 36;
+    particles.push({
+      type: 'sparkle', x: sx, y: sy,
+      vx: (Math.random() - 0.5) * 1, vy: -0.5 - Math.random(),
+      size: 2 + Math.random() * 3, life: 25, maxLife: 25,
+      color: ['#FFD700', '#FFFFFF', '#FFAA00'][Math.floor(Math.random() * 3)],
+      alpha: 1,
+    });
+  }
+}
+
+function checkPowerUpCollision() {
+  if (!powerUp.active) return;
+  const dx = player.x - powerUp.x;
+  const dy = player.y - (powerUp.y + Math.sin(powerUp.bobOffset + frameCount * 0.05) * 4);
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < (player.width + powerUp.width) * 0.4) {
+    collectPowerUp();
+  }
+}
+
+function collectPowerUp() {
+  powerUp.active = false;
+  sfxPowerUp();
+  spawnEatParticles(powerUp.x, powerUp.y, '#FFD700');
+  spawnScorePopup(powerUp.x, powerUp.y - 20, 'SUPER GROW!');
+  flashTimer = 20;
+
+  // Grow player by 1 size level
+  if (player.sizeLevel < 5) {
+    player.sizeLevel++;
+    player.width = SIZE_DIMENSIONS[player.sizeLevel].w;
+    player.height = SIZE_DIMENSIONS[player.sizeLevel].h;
+    player.eatCount = SIZE_THRESHOLDS[player.sizeLevel];
+    sfxGrow();
+    levelUpTimer = 60;
+    spawnEatParticles(player.x, player.y, '#FFD700');
+  }
+}
+
+function drawPowerUp() {
+  if (!powerUp.active) return;
+  const bob = Math.sin(powerUp.bobOffset + frameCount * 0.05) * 4;
+  const px = powerUp.x;
+  const py = powerUp.y + bob;
+  const ps = 2;
+
+  // Glow effect
+  const glowAlpha = 0.15 + Math.sin(frameCount * 0.1) * 0.08;
+  ctx.globalAlpha = glowAlpha;
+  ctx.fillStyle = '#FFD700';
+  ctx.beginPath();
+  ctx.arc(px, py, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Jar body (glass)
+  ctx.fillStyle = '#88CCEE';
+  ctx.fillRect(px - 6 * ps, py - 4 * ps, 12 * ps, 10 * ps);
+  // Glass highlight
+  ctx.fillStyle = 'rgba(200,240,255,0.5)';
+  ctx.fillRect(px - 5 * ps, py - 3 * ps, 2 * ps, 8 * ps);
+  // Glass outline
+  ctx.strokeStyle = '#336688';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(px - 6 * ps, py - 4 * ps, 12 * ps, 10 * ps);
+
+  // Lid (gold)
+  ctx.fillStyle = '#DAA520';
+  ctx.fillRect(px - 7 * ps, py - 6 * ps, 14 * ps, 2 * ps);
+  ctx.strokeStyle = '#8B6914';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px - 7 * ps, py - 6 * ps, 14 * ps, 2 * ps);
+
+  // Lid knob
+  ctx.fillStyle = '#FFD700';
+  ctx.fillRect(px - 2 * ps, py - 7.5 * ps, 4 * ps, 2 * ps);
+
+  // Fish food inside (colorful pellets)
+  const pelletColors = ['#FF6644', '#FFAA22', '#FF4488', '#FF8833', '#FFCC11'];
+  for (let i = 0; i < 8; i++) {
+    const pelletX = px + (((i * 7 + 3) % 10) - 5) * ps * 0.8;
+    const pelletY = py + (((i * 5 + 2) % 8) - 3) * ps * 0.7;
+    ctx.fillStyle = pelletColors[i % pelletColors.length];
+    ctx.beginPath();
+    ctx.arc(pelletX, pelletY, ps * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Label
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 8px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('SUPER', px, py + 3 * ps + 3);
+
+  // Floating arrow indicator
+  const arrowBob = Math.sin(frameCount * 0.12) * 3;
+  ctx.fillStyle = '#FFD700';
+  ctx.beginPath();
+  ctx.moveTo(px, py - 10 * ps + arrowBob);
+  ctx.lineTo(px - 4, py - 12 * ps + arrowBob);
+  ctx.lineTo(px + 4, py - 12 * ps + arrowBob);
+  ctx.fill();
+}
+
+function playerDeath() {
+  sfxDeath();
+  spawnDeathParticles(player.x, player.y);
+  lives--;
+  gameState = STATE.DYING;
+  dyingTimer = 90;
+  stopMusic();
+}
+
+function respawnPlayer() {
+  if (lives <= 0) {
+    gameState = STATE.GAME_OVER;
+    gameOverTimer = 120;
+    if (score > highScore) {
+      highScore = score;
+      localStorage.setItem('sharkyHighScore', highScore.toString());
+    }
+    return;
+  }
+  gameState = STATE.PLAYING;
+  player.x = GW / 2;
+  player.y = GH / 2;
+  player.vx = 0;
+  player.vy = 0;
+  player.invincible = 120;
+  // Shrink down one size on death
+  if (player.sizeLevel > 0) {
+    player.sizeLevel--;
+    player.width = SIZE_DIMENSIONS[player.sizeLevel].w;
+    player.height = SIZE_DIMENSIONS[player.sizeLevel].h;
+    player.eatCount = SIZE_THRESHOLDS[player.sizeLevel];
+  }
+  // Clear nearby enemies
+  enemies = enemies.filter(e => {
+    const dx = e.x - player.x;
+    const dy = e.y - player.y;
+    return Math.sqrt(dx * dx + dy * dy) > 150;
+  });
+  startMusic(sharkActive ? 'shark' : 'happy');
+}
+
+function updateShark() {
+  if (!shark.active) {
+    sharkTimer--;
+    if (sharkTimer <= 0 && gameState === STATE.PLAYING) {
+      activateShark();
+    }
+    return;
+  }
+
+  shark.hitCooldown = Math.max(0, shark.hitCooldown - 1);
+
+  const sharkSpeed = 0.75 + level * 0.075;
+
+  switch (shark.phase) {
+    case 'enter': {
+      // Swim in from side
+      const targetY = player.y;
+      shark.y += (targetY - shark.y) * 0.02;
+      shark.x += shark.vx;
+      const inBounds = shark.facingLeft ?
+        shark.x < GW - 100 :
+        shark.x > 100;
+      if (inBounds) {
+        shark.phase = 'patrol';
+        shark.chargeTimer = 120 + Math.random() * 120;
+      }
+      break;
+    }
+    case 'patrol': {
+      // Swim back and forth, loosely tracking player
+      shark.x += shark.vx;
+      shark.y += (player.y - shark.y) * 0.01;
+      shark.y += Math.sin(frameCount * 0.03) * 0.5;
+
+      // Turn at edges
+      if (shark.x < 80) { shark.vx = Math.abs(shark.vx); shark.facingLeft = false; }
+      if (shark.x > GW - 80) { shark.vx = -Math.abs(shark.vx); shark.facingLeft = true; }
+
+      shark.chargeTimer--;
+      if (shark.chargeTimer <= 0) {
+        shark.phase = 'charge';
+        shark.chargeTimer = 60;
+        // Aim at player
+        const dx = player.x - shark.x;
+        const dy = player.y - shark.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        shark.vx = (dx / dist) * sharkSpeed * 1.25;
+        shark.vy = (dy / dist) * sharkSpeed * 1.25;
+        shark.facingLeft = dx < 0;
+      }
+      break;
+    }
+    case 'charge': {
+      shark.x += shark.vx;
+      shark.y += shark.vy;
+      shark.chargeTimer--;
+
+      // Eat any small fish in the way
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        const dx = e.x - shark.x;
+        const dy = e.y - shark.y;
+        if (Math.abs(dx) < 60 && Math.abs(dy) < 30) {
+          enemies.splice(i, 1);
+          spawnEatParticles(e.x, e.y, '#FF4444');
+        }
+      }
+
+      if (shark.chargeTimer <= 0) {
+        shark.phase = 'patrol';
+        shark.chargeTimer = 100 + Math.random() * 100;
+        shark.vx = shark.facingLeft ? -sharkSpeed : sharkSpeed;
+        shark.vy = 0;
+      }
+
+      // Bounds
+      if (shark.y < 30) shark.vy = Math.abs(shark.vy);
+      if (shark.y > GH - 80) shark.vy = -Math.abs(shark.vy);
+      if (shark.x < -200 || shark.x > GW + 200) {
+        shark.phase = 'enter';
+        shark.x = shark.x < 0 ? -120 : GW + 120;
+      }
+      break;
+    }
+  }
+
+  // Bubble trail
+  if (frameCount % 8 === 0) {
+    const bx = shark.facingLeft ? shark.x + shark.width * 0.4 : shark.x - shark.width * 0.4;
+    spawnBubble(bx, shark.y - 5);
+  }
+
+  // Shark leaves after a while - count down stay timer
+  if (shark.phase !== 'exit') {
+    shark._stayTimer = (shark._stayTimer || 0) - 1;
+    if (shark._stayTimer <= 0) {
+      // Begin exit: shark swims off to nearest side
+      shark.phase = 'exit';
+      const exitLeft = shark.x < GW / 2;
+      shark.vx = exitLeft ? -2.0 : 2.0;
+      shark.vy = 0;
+      shark.facingLeft = exitLeft;
+    }
+  }
+
+  // Exit phase: swim off screen then deactivate
+  if (shark.phase === 'exit') {
+    shark.x += shark.vx;
+    shark.y += Math.sin(frameCount * 0.03) * 0.3; // gentle bobbing
+    // Only deactivate once fully off screen
+    if (shark.x < -shark.width && shark.vx < 0 || shark.x > GW + shark.width && shark.vx > 0) {
+      shark.active = false;
+      sharkActive = false;
+      sharkTimer = 600 + Math.random() * 400;
+      shark._stayTimer = 0;
+      startMusic('happy');
+    }
+  }
+}
+
+function activateShark() {
+  sharkBitesThisPatrol = 0;
+  sharkActive = true;
+  shark.active = true;
+  shark.hp = 8 + level * 2;
+  shark.hitCooldown = 0;
+  // Stay timer in frames (36fps): base 15 seconds + 2 seconds per level
+  shark._stayTimer = 36 * (15 + level * 2);
+
+  const fromLeft = Math.random() > 0.5;
+  shark.x = fromLeft ? -120 : GW + 120;
+  shark.y = 60 + Math.random() * (GH - 180);
+  shark.facingLeft = !fromLeft;
+  shark.vx = fromLeft ? 1.0 : -1.0;
+  shark.vy = 0;
+  shark.phase = 'enter';
+
+  sfxSharkWarning();
+  startMusic('shark');
+  flashTimer = 15;
+}
+
+// ============================================================
+//  RENDERING
+// ============================================================
+function drawHUD() {
+  // Score
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 18px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`SCORE: ${score}`, 12, 24);
+
+  // High score
+  ctx.fillStyle = '#AAAACC';
+  ctx.font = '12px monospace';
+  ctx.fillText(`HI: ${highScore}`, 12, 40);
+
+  // Level
+  ctx.fillStyle = '#FFDD44';
+  ctx.font = 'bold 14px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`LEVEL ${level}`, GW / 2, 24);
+
+  // Size meter
+  const meterX = GW / 2 - 50;
+  const meterY = 30;
+  const meterW = 100;
+  const meterH = 8;
+  ctx.fillStyle = '#1a2a4a';
+  ctx.fillRect(meterX, meterY, meterW, meterH);
+  const nextThresh = SIZE_THRESHOLDS[player.sizeLevel + 1] || SIZE_THRESHOLDS[player.sizeLevel];
+  const currThresh = SIZE_THRESHOLDS[player.sizeLevel];
+  const progress = player.sizeLevel >= 5 ? 1 :
+    (player.eatCount - currThresh) / (nextThresh - currThresh);
+  const grad = ctx.createLinearGradient(meterX, 0, meterX + meterW, 0);
+  grad.addColorStop(0, '#44FF44');
+  grad.addColorStop(1, '#FFDD00');
+  ctx.fillStyle = grad;
+  ctx.fillRect(meterX, meterY, meterW * Math.min(1, progress), meterH);
+  ctx.strokeStyle = '#4a6a9a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(meterX, meterY, meterW, meterH);
+
+  ctx.fillStyle = '#AADDFF';
+  ctx.font = '10px monospace';
+  ctx.fillText(`SIZE ${player.sizeLevel + 1}/6`, GW / 2, meterY + meterH + 12);
+
+  // Lives
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#FF6666';
+  ctx.font = 'bold 16px monospace';
+  let livesStr = '';
+  for (let i = 0; i < lives; i++) livesStr += '\u2665 ';
+  ctx.fillText(livesStr, GW - 12, 24);
+
+  // Dart cooldown indicator
+  const dartReady = player.dartCooldown <= 0;
+  const dartBarX = GW - 80;
+  const dartBarY = 32;
+  const dartBarW = 66;
+  const dartBarH = 6;
+  ctx.fillStyle = '#1a2a4a';
+  ctx.fillRect(dartBarX, dartBarY, dartBarW, dartBarH);
+  if (dartReady) {
+    ctx.fillStyle = '#44DDFF';
+    ctx.fillRect(dartBarX, dartBarY, dartBarW, dartBarH);
+  } else {
+    const pct = 1 - player.dartCooldown / DART_COOLDOWN;
+    ctx.fillStyle = '#226688';
+    ctx.fillRect(dartBarX, dartBarY, dartBarW * pct, dartBarH);
+  }
+  ctx.strokeStyle = '#4a6a9a';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(dartBarX, dartBarY, dartBarW, dartBarH);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = dartReady ? '#44DDFF' : '#668899';
+  ctx.font = '9px monospace';
+  ctx.fillText(dartReady ? 'DART [SPACE]' : 'DART ...', GW - 12, dartBarY + dartBarH + 10);
+
+  // Combo
+  if (comboCount > 1 && comboTimer > 0) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(255,255,0,${comboTimer / 90})`;
+    ctx.font = `bold ${14 + comboCount * 2}px monospace`;
+    ctx.fillText(`COMBO x${Math.min(comboCount, 5)}!`, GW / 2, GH - 70);
+  }
+
+  // Shark warning
+  if (sharkActive && shark.active) {
+    const warningAlpha = 0.5 + Math.sin(frameCount * 0.15) * 0.3;
+    ctx.fillStyle = `rgba(255,50,50,${warningAlpha})`;
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('SHARK! BITE ITS TAIL!', GW / 2, GH - 52);
+  }
+}
+
+function drawPlayer() {
+  if (player.invincible > 0 && frameCount % 6 < 3) return; // Flash when invincible
+
+  const sprite = createPlayerFish(player.sizeLevel, frameCount, player.facingLeft);
+  ctx.drawImage(sprite,
+    player.x - player.width / 2,
+    player.y - player.height / 2,
+    player.width,
+    player.height
+  );
+}
+
+function drawEnemies() {
+  enemies.forEach(e => {
+    const spriteData = createEnemyFish(e.type, e.frame, e.facingLeft, e.colorIdx, e.patternIdx);
+    ctx.drawImage(spriteData.canvas,
+      e.x - e.width / 2,
+      e.y - e.height / 2,
+      e.width,
+      e.height
+    );
+  });
+}
+
+function drawShark() {
+  if (!shark.active) return;
+
+  // Hit flash
+  if (shark.hitCooldown > 50) {
+    ctx.globalAlpha = 0.5 + Math.sin(frameCount * 0.8) * 0.5;
+  }
+
+  const spriteData = createShark(frameCount, shark.facingLeft);
+  ctx.drawImage(spriteData.canvas,
+    shark.x - shark.width / 2,
+    shark.y - shark.height / 2,
+    shark.width,
+    shark.height
+  );
+  ctx.globalAlpha = 1;
+
+  // Shark HP bar
+  if (shark.hp > 0) {
+    const barW = 60;
+    const barH = 5;
+    const barX = shark.x - barW / 2;
+    const barY = shark.y - shark.height / 2 - 12;
+    ctx.fillStyle = '#440000';
+    ctx.fillRect(barX, barY, barW, barH);
+    const maxHp = 8 + level * 2;
+    ctx.fillStyle = '#FF2222';
+    ctx.fillRect(barX, barY, barW * (shark.hp / maxHp), barH);
+    ctx.strokeStyle = '#880000';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
+  }
+}
+
+function drawAmbientBubbles() {
+  ambientBubbles.forEach(b => {
+    b.y -= b.speed;
+    b.x += Math.sin(b.wobble + frameCount * 0.02) * 0.3;
+    if (b.y < -10) {
+      b.y = GH + 10;
+      b.x = Math.random() * GW;
+    }
+    ctx.globalAlpha = 0.2;
+    ctx.strokeStyle = '#88BBDD';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+}
+
+function drawFlash() {
+  if (flashTimer > 0) {
+    ctx.globalAlpha = flashTimer / 30 * 0.3;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, GW, GH);
+    ctx.globalAlpha = 1;
+    flashTimer--;
+  }
+}
+
+function drawTitleScreen() {
+  // Draw background
+  if (!bgCanvas) createBackground();
+  ctx.drawImage(bgCanvas, 0, 0);
+  drawCaustics();
+  drawAmbientBubbles();
+
+  // Darken overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, GW, GH);
+
+  // Title text with wave effect
+  ctx.textAlign = 'center';
+
+  // Shadow
+  ctx.fillStyle = '#001133';
+  ctx.font = 'bold 52px monospace';
+  const titleY = 160 + Math.sin(frameCount * 0.04) * 8;
+  ctx.fillText('SHARKY', GW / 2 + 3, titleY + 3);
+  ctx.fillText('SHARKSTER', GW / 2 + 3, titleY + 58);
+
+  // Main title
+  const titleHue = (frameCount * 2) % 360;
+  ctx.fillStyle = `hsl(${titleHue}, 80%, 65%)`;
+  ctx.fillText('SHARKY', GW / 2, titleY);
+  ctx.fillStyle = `hsl(${(titleHue + 30) % 360}, 80%, 65%)`;
+  ctx.fillText('SHARKSTER', GW / 2, titleY + 55);
+
+  // Subtitle
+  ctx.fillStyle = '#88BBDD';
+  ctx.font = '16px monospace';
+  ctx.fillText('CAN YOU DEFEAT SHARKY?', GW / 2, titleY + 85);
+
+  // Instructions
+  const blink = Math.sin(frameCount * 0.08) > 0;
+  if (blink) {
+    ctx.fillStyle = '#FFDD44';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('PRESS ANY KEY TO SWIM', GW / 2, 330);
+  }
+
+  ctx.fillStyle = '#AABBCC';
+  ctx.font = '13px monospace';
+  ctx.fillText('ARROW KEYS / WASD TO SWIM', GW / 2, 370);
+  ctx.fillText('SPACE BAR TO DART', GW / 2, 390);
+  ctx.fillText('EAT SMALLER FISH TO GROW', GW / 2, 410);
+  ctx.fillText('AVOID BIGGER FISH AND THE SHARK!', GW / 2, 430);
+  ctx.fillText('BITE THE SHARK\'S TAIL TO DEFEAT IT!', GW / 2, 450);
+
+  if (highScore > 0) {
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText(`HIGH SCORE: ${highScore}`, GW / 2, 470);
+  }
+}
+
+function drawGameOver() {
+  // Darken
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, GW, GH);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#FF4444';
+  ctx.font = 'bold 48px monospace';
+  ctx.fillText('GAME OVER', GW / 2, 180);
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 24px monospace';
+  ctx.fillText(`FINAL SCORE: ${score}`, GW / 2, 240);
+
+  ctx.fillStyle = '#AADDFF';
+  ctx.font = '16px monospace';
+  ctx.fillText(`LEVEL: ${level}  |  SHARKS DEFEATED: ${sharkDefeats}`, GW / 2, 280);
+
+  if (score >= highScore && score > 0) {
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 20px monospace';
+    const sparkle = Math.sin(frameCount * 0.15) > 0 ? ' \u2605' : ' \u2606';
+    ctx.fillText(`NEW HIGH SCORE!${sparkle}`, GW / 2, 320);
+  }
+
+  if (gameOverTimer <= 0) {
+    const blink = Math.sin(frameCount * 0.08) > 0;
+    if (blink) {
+      ctx.fillStyle = '#FFDD44';
+      ctx.font = 'bold 16px monospace';
+      ctx.fillText('PRESS ANY KEY TO CONTINUE', GW / 2, 370);
+    }
+  }
+}
+
+function drawLevelUpEffect() {
+  if (levelUpTimer > 0) {
+    const alpha = levelUpTimer / 60;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(255,215,0,${alpha})`;
+    ctx.font = `bold ${24 + (60 - levelUpTimer) * 0.5}px monospace`;
+    ctx.fillText('SIZE UP!', GW / 2, GH / 2 - 40);
+    levelUpTimer--;
+  }
+}
+
+// ============================================================
+//  MAIN GAME LOOP
+// ============================================================
+function update() {
+  frameCount++;
+
+  switch (gameState) {
+    case STATE.PLAYING:
+      updatePlayer();
+      updateEnemies();
+      updateShark();
+      checkCollisions();
+      updatePowerUp();
+      checkPowerUpCollision();
+
+      // Combo decay
+      if (comboTimer > 0) {
+        comboTimer--;
+        if (comboTimer <= 0) comboCount = 0;
+      }
+      break;
+
+    case STATE.DYING:
+      dyingTimer--;
+      updateParticles();
+      if (dyingTimer <= 0) {
+        respawnPlayer();
+      }
+      return; // Skip normal render, handle below
+
+    case STATE.GAME_OVER:
+      if (gameOverTimer > 0) gameOverTimer--;
+      break;
+  }
+}
+
+function render() {
+  // Background — regenerate when level changes (deeper = darker navy)
+  if (!bgCanvas || bgLevel !== level) createBackground();
+  ctx.drawImage(bgCanvas, 0, 0);
+  drawCaustics();
+  drawAmbientBubbles();
+
+  switch (gameState) {
+    case STATE.TITLE:
+      drawTitleScreen();
+      break;
+
+    case STATE.PLAYING:
+    case STATE.DYING:
+      drawEnemies();
+      drawShark();
+      drawPowerUp();
+      if (gameState !== STATE.DYING) drawPlayer();
+      updateParticles();
+      drawParticles();
+      drawFlash();
+      drawLevelUpEffect();
+      drawHUD();
+      break;
+
+    case STATE.GAME_OVER:
+      drawEnemies();
+      drawShark();
+      updateParticles();
+      drawParticles();
+      drawHUD();
+      drawGameOver();
+      break;
+  }
+}
+
+// Fixed timestep: update at 36fps while rendering every frame
+const TARGET_UPDATE_MS = 1000 / 36; // ~28ms per update tick
+let lastTime = 0;
+let accumulator = 0;
+
+function gameLoop(timestamp) {
+  if (!lastTime) lastTime = timestamp;
+  const delta = timestamp - lastTime;
+  lastTime = timestamp;
+  accumulator += delta;
+
+  // Only update game logic at 36fps rate
+  while (accumulator >= TARGET_UPDATE_MS) {
+    update();
+    accumulator -= TARGET_UPDATE_MS;
+  }
+
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+// Initialize
+createBackground();
+requestAnimationFrame(gameLoop);
+
+</script>
+</body>
+</html>
