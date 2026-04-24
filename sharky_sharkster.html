@@ -161,6 +161,7 @@ function sfxDart() {
 let currentMusic = null;
 let musicPlaying = false;
 let musicTimeout = null;
+let musicEnabled = localStorage.getItem('sharkyMusicEnabled') !== 'false';
 
 const NOTE_FREQS = {
   C3: 130.81, D3: 146.83, E3: 164.81, F3: 174.61, G3: 196.00, A3: 220.00, B3: 246.94,
@@ -233,6 +234,10 @@ function playMusicLoop(melody, bass, type = 'happy') {
 }
 
 function startMusic(type = 'happy') {
+  if (!musicEnabled) {
+    currentMusic = type;
+    return;
+  }
   if (currentMusic === type && musicPlaying) return;
   stopMusic();
   currentMusic = type;
@@ -251,6 +256,20 @@ function stopMusic() {
     musicTimeout = null;
   }
   currentMusic = null;
+}
+
+function toggleMusic() {
+  musicEnabled = !musicEnabled;
+  localStorage.setItem('sharkyMusicEnabled', musicEnabled);
+  if (!musicEnabled) {
+    const resumeType = currentMusic;
+    stopMusic();
+    currentMusic = resumeType;
+  } else {
+    const resumeType = currentMusic || (sharkActive ? 'shark' : 'happy');
+    currentMusic = null;
+    startMusic(resumeType);
+  }
 }
 
 // ============================================================
@@ -1234,6 +1253,11 @@ window.addEventListener('keydown', (e) => {
     initAudio();
     audioStarted = true;
   }
+  // Music toggle — does not also start the game or advance screens
+  if (e.key.toLowerCase() === 'm') {
+    toggleMusic();
+    return;
+  }
   if (gameState === STATE.TITLE) {
     startGame();
   }
@@ -2014,6 +2038,12 @@ function drawHUD() {
     ctx.textAlign = 'center';
     ctx.fillText('SHARK! BITE ITS TAIL!', GW / 2, GH - 52);
   }
+
+  // Music indicator
+  ctx.textAlign = 'right';
+  ctx.fillStyle = musicEnabled ? 'rgba(136,255,170,0.6)' : 'rgba(170,136,136,0.6)';
+  ctx.font = '9px monospace';
+  ctx.fillText(`${musicEnabled ? '♪' : 'X'} MUSIC [M]`, GW - 8, GH - 8);
 }
 
 function drawPlayer() {
@@ -2156,6 +2186,12 @@ function drawTitleScreen() {
     ctx.font = 'bold 14px monospace';
     ctx.fillText(`HIGH SCORE: ${highScore}`, GW / 2, 470);
   }
+
+  ctx.fillStyle = musicEnabled ? '#88FFAA' : '#AA8888';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`MUSIC: ${musicEnabled ? 'ON' : 'OFF'}  [M]`, GW - 8, GH - 8);
+  ctx.textAlign = 'center';
 }
 
 function drawGameOver() {
