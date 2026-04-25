@@ -1832,7 +1832,7 @@ function spawnStarfish() {
 
 function updateStarfish() {
   // Check if score crossed a new 2000-point threshold
-  const threshold = Math.floor(score / 2000) * 2000;
+  const threshold = Math.floor(score / 200) * 2000;
   if (threshold > 0 && threshold > lastStarfishScoreThreshold && !starfish.active && starfishImmunityTimer <= 0) {
     lastStarfishScoreThreshold = threshold;
     spawnStarfish();
