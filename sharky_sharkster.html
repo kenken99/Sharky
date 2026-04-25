@@ -1139,12 +1139,45 @@ const STATE = {
   GAME_OVER: 3,
   LEVEL_UP: 4,
   PAUSED: 5,
+  HIGH_SCORE_ENTRY: 6,
 };
 
 let gameState = STATE.TITLE;
 let score = 0;
-let highScore = parseInt(localStorage.getItem('sharkyHighScore')) || 0;
 let lives = 3;
+
+// High score leaderboard
+const DEFAULT_LEADERBOARD = [
+  { name: 'ORC', score: 20000 },
+  { name: 'MNT', score: 18000 },
+  { name: 'DLF', score: 16000 },
+  { name: 'WHL', score: 14000 },
+  { name: 'TRT', score: 12000 },
+  { name: 'JLY', score: 10000 },
+  { name: 'SHL', score: 8000 },
+  { name: 'CRL', score: 6000 },
+  { name: 'EEL', score: 4000 },
+  { name: 'CLM', score: 2000 },
+];
+
+function loadLeaderboard() {
+  const saved = localStorage.getItem('sharkyLeaderboard');
+  if (saved) {
+    try { return JSON.parse(saved); } catch(e) {}
+  }
+  return DEFAULT_LEADERBOARD.map(e => ({ ...e }));
+}
+function saveLeaderboard() {
+  localStorage.setItem('sharkyLeaderboard', JSON.stringify(leaderboard));
+}
+let leaderboard = loadLeaderboard();
+let highScore = leaderboard[0].score;
+
+// High score entry state
+let hsEntryRank = -1;
+let hsEntryInitials = ['A', 'A', 'A'];
+let hsEntryPos = 0;  // which letter (0-2) is being edited
+let hsEntryDone = false;
 let level = 1;
 let frameCount = 0;
 let sharkTimer = 0;
@@ -1266,6 +1299,44 @@ window.addEventListener('keydown', (e) => {
     initAudio();
     audioStarted = true;
   }
+
+  // High score entry input
+  if (gameState === STATE.HIGH_SCORE_ENTRY) {
+    if (e.key === 'ArrowUp') {
+      const code = hsEntryInitials[hsEntryPos].charCodeAt(0);
+      hsEntryInitials[hsEntryPos] = code >= 90 ? 'A' : String.fromCharCode(code + 1);
+      playNote(400 + hsEntryPos * 100, 0.05, 'square', sfxGain, 0.15);
+    } else if (e.key === 'ArrowDown') {
+      const code = hsEntryInitials[hsEntryPos].charCodeAt(0);
+      hsEntryInitials[hsEntryPos] = code <= 65 ? 'Z' : String.fromCharCode(code - 1);
+      playNote(400 + hsEntryPos * 100, 0.05, 'square', sfxGain, 0.15);
+    } else if (e.key === 'ArrowRight' || e.key === ' ') {
+      if (hsEntryPos < 2) {
+        hsEntryPos++;
+        playNote(500, 0.05, 'square', sfxGain, 0.15);
+      }
+    } else if (e.key === 'ArrowLeft') {
+      if (hsEntryPos > 0) {
+        hsEntryPos--;
+        playNote(500, 0.05, 'square', sfxGain, 0.15);
+      }
+    } else if (e.key === 'Enter') {
+      // Commit the entry
+      const entry = { name: hsEntryInitials.join(''), score: score };
+      leaderboard.splice(hsEntryRank, 0, entry);
+      leaderboard.length = 10;
+      highScore = leaderboard[0].score;
+      saveLeaderboard();
+      sfxPowerUp();
+      gameState = STATE.TITLE;
+    } else if (e.key.length === 1 && /[a-zA-Z]/.test(e.key) && e.key.toLowerCase() !== 'm') {
+      hsEntryInitials[hsEntryPos] = e.key.toUpperCase();
+      playNote(500, 0.05, 'square', sfxGain, 0.15);
+      if (hsEntryPos < 2) hsEntryPos++;
+    }
+    return;
+  }
+
   // Music toggle — does not also start the game or advance screens
   if (e.key.toLowerCase() === 'm') {
     toggleMusic();
@@ -1275,7 +1346,14 @@ window.addEventListener('keydown', (e) => {
     startGame();
   }
   if (gameState === STATE.GAME_OVER && gameOverTimer <= 0) {
-    gameState = STATE.TITLE;
+    if (hsEntryRank >= 0) {
+      // Transition to high score entry
+      gameState = STATE.HIGH_SCORE_ENTRY;
+      hsEntryInitials = ['A', 'A', 'A'];
+      hsEntryPos = 0;
+    } else {
+      gameState = STATE.TITLE;
+    }
   }
 });
 window.addEventListener('keyup', (e) => {
@@ -1922,9 +2000,16 @@ function respawnPlayer() {
   if (lives <= 0) {
     gameState = STATE.GAME_OVER;
     gameOverTimer = 120;
+    // Check if score qualifies for leaderboard
+    hsEntryRank = -1;
+    for (let i = 0; i < leaderboard.length; i++) {
+      if (score > leaderboard[i].score) {
+        hsEntryRank = i;
+        break;
+      }
+    }
     if (score > highScore) {
       highScore = score;
-      localStorage.setItem('sharkyHighScore', highScore.toString());
     }
     return;
   }
@@ -2109,7 +2194,7 @@ function drawHUD() {
 
   // High score
   ctx.fillStyle = '#AAAACC';
-  ctx.fillText(`HI: ${highScore}`, 12, 54);
+  ctx.fillText(`HI: ${leaderboard[0].score}`, 12, 54);
 
   // Starfish immunity timer
   if (starfishImmunityTimer > 0) {
@@ -2350,7 +2435,7 @@ function drawTitleScreen() {
   // Shadow
   ctx.fillStyle = '#001133';
   ctx.font = 'bold 52px monospace';
-  const titleY = 160 + Math.sin(frameCount * 0.04) * 8;
+  const titleY = 50 + Math.sin(frameCount * 0.04) * 8;
   ctx.fillText('SHARKY', GW / 2 + 3, titleY + 3);
   ctx.fillText('SHARKSTER', GW / 2 + 3, titleY + 58);
 
@@ -2366,26 +2451,21 @@ function drawTitleScreen() {
   ctx.font = '16px monospace';
   ctx.fillText('CAN YOU DEFEAT SHARKY?', GW / 2, titleY + 85);
 
+  // Leaderboard
+  drawLeaderboardTable(170, -1);
+
   // Instructions
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#AABBCC';
+  ctx.font = '11px monospace';
+  ctx.fillText('ARROWS/WASD: SWIM   SPACE: DART   M: MUSIC', GW / 2, 400);
+  ctx.fillText('EAT SMALLER FISH \u2022 AVOID BIGGER FISH \u2022 BITE SHARK\'S TAIL', GW / 2, 416);
+
   const blink = Math.sin(frameCount * 0.08) > 0;
   if (blink) {
     ctx.fillStyle = '#FFDD44';
     ctx.font = 'bold 18px monospace';
-    ctx.fillText('PRESS ANY KEY TO SWIM', GW / 2, 330);
-  }
-
-  ctx.fillStyle = '#AABBCC';
-  ctx.font = '13px monospace';
-  ctx.fillText('ARROW KEYS / WASD TO SWIM', GW / 2, 370);
-  ctx.fillText('SPACE BAR TO DART', GW / 2, 390);
-  ctx.fillText('EAT SMALLER FISH TO GROW', GW / 2, 410);
-  ctx.fillText('AVOID BIGGER FISH AND THE SHARK!', GW / 2, 430);
-  ctx.fillText('BITE THE SHARK\'S TAIL TO DEFEAT IT!', GW / 2, 450);
-
-  if (highScore > 0) {
-    ctx.fillStyle = '#FFD700';
-    ctx.font = 'bold 14px monospace';
-    ctx.fillText(`HIGH SCORE: ${highScore}`, GW / 2, 470);
+    ctx.fillText('PRESS ANY KEY TO SWIM', GW / 2, 450);
   }
 
   ctx.fillStyle = musicEnabled ? '#88FFAA' : '#AA8888';
@@ -2413,11 +2493,11 @@ function drawGameOver() {
   ctx.font = '16px monospace';
   ctx.fillText(`LEVEL: ${level}  |  SHARKS DEFEATED: ${sharkDefeats}`, GW / 2, 280);
 
-  if (score >= highScore && score > 0) {
+  if (hsEntryRank >= 0) {
     ctx.fillStyle = '#FFD700';
     ctx.font = 'bold 20px monospace';
     const sparkle = Math.sin(frameCount * 0.15) > 0 ? ' \u2605' : ' \u2606';
-    ctx.fillText(`NEW HIGH SCORE!${sparkle}`, GW / 2, 320);
+    ctx.fillText(`TOP ${hsEntryRank + 1} SCORE!${sparkle}`, GW / 2, 320);
   }
 
   if (gameOverTimer <= 0) {
@@ -2427,6 +2507,97 @@ function drawGameOver() {
       ctx.font = 'bold 16px monospace';
       ctx.fillText('PRESS ANY KEY TO CONTINUE', GW / 2, 370);
     }
+  }
+}
+
+function drawHighScoreEntry() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, GW, GH);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#FFD700';
+  ctx.font = 'bold 32px monospace';
+  ctx.fillText('HIGH SCORE!', GW / 2, 60);
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText(`SCORE: ${score}`, GW / 2, 95);
+
+  ctx.fillStyle = '#AADDFF';
+  ctx.font = '16px monospace';
+  ctx.fillText('ENTER YOUR INITIALS', GW / 2, 130);
+
+  // Draw the 3 letter slots
+  const slotW = 40;
+  const slotGap = 12;
+  const startX = GW / 2 - (slotW * 3 + slotGap * 2) / 2;
+  const slotY = 150;
+
+  for (let i = 0; i < 3; i++) {
+    const sx = startX + i * (slotW + slotGap);
+    const isActive = i === hsEntryPos;
+
+    // Slot background
+    ctx.fillStyle = isActive ? 'rgba(255,215,0,0.3)' : 'rgba(255,255,255,0.1)';
+    ctx.fillRect(sx, slotY, slotW, 48);
+    ctx.strokeStyle = isActive ? '#FFD700' : '#556688';
+    ctx.lineWidth = isActive ? 2 : 1;
+    ctx.strokeRect(sx, slotY, slotW, 48);
+
+    // Letter
+    ctx.fillStyle = isActive ? '#FFD700' : '#FFFFFF';
+    ctx.font = 'bold 30px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(hsEntryInitials[i], sx + slotW / 2, slotY + 36);
+
+    // Up/down arrows for active slot
+    if (isActive) {
+      const arrowBob = Math.sin(frameCount * 0.15) * 2;
+      ctx.fillStyle = '#FFD700';
+      ctx.font = '14px monospace';
+      ctx.fillText('\u25B2', sx + slotW / 2, slotY - 4 + arrowBob);
+      ctx.fillText('\u25BC', sx + slotW / 2, slotY + 64 - arrowBob);
+    }
+  }
+
+  ctx.fillStyle = '#88AACC';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('\u2190 \u2192 MOVE   \u2191 \u2193 CHANGE   TYPE LETTERS   ENTER TO CONFIRM', GW / 2, 228);
+
+  // Draw leaderboard with the new entry highlighted
+  drawLeaderboardTable(250, hsEntryRank);
+}
+
+function drawLeaderboardTable(topY, highlightRank) {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#88BBDD';
+  ctx.font = 'bold 16px monospace';
+  ctx.fillText('TOP 10', GW / 2, topY);
+
+  const rowH = 18;
+  const startY = topY + 20;
+
+  for (let i = 0; i < leaderboard.length; i++) {
+    const entry = leaderboard[i];
+    const y = startY + i * rowH;
+    const isHighlight = i === highlightRank;
+
+    if (isHighlight) {
+      const pulse = 0.6 + Math.sin(frameCount * 0.12) * 0.3;
+      ctx.fillStyle = `rgba(255,215,0,${pulse})`;
+    } else {
+      ctx.fillStyle = i < 3 ? '#FFD700' : '#AABBCC';
+    }
+    ctx.font = isHighlight ? 'bold 13px monospace' : '13px monospace';
+
+    const rank = `${i + 1}.`.padStart(3);
+    const name = isHighlight && highlightRank >= 0 && gameState === STATE.HIGH_SCORE_ENTRY
+      ? hsEntryInitials.join('')
+      : entry.name;
+    const scoreStr = entry.score.toString().padStart(6);
+    ctx.textAlign = 'center';
+    ctx.fillText(`${rank} ${name}  ${scoreStr}`, GW / 2, y);
   }
 }
 
@@ -2512,6 +2683,10 @@ function render() {
       drawParticles();
       drawHUD();
       drawGameOver();
+      break;
+
+    case STATE.HIGH_SCORE_ENTRY:
+      drawHighScoreEntry();
       break;
   }
 }
