@@ -1953,10 +1953,14 @@ function drawHUD() {
   ctx.textAlign = 'left';
   ctx.fillText(`SCORE: ${score}`, 12, 24);
 
-  // High score
+  // Sharks defeated
   ctx.fillStyle = '#AAAACC';
   ctx.font = '12px monospace';
-  ctx.fillText(`HI: ${highScore}`, 12, 40);
+  ctx.fillText(`SHARKS: ${sharkDefeats}`, 12, 40);
+
+  // High score
+  ctx.fillStyle = '#AAAACC';
+  ctx.fillText(`HI: ${highScore}`, 12, 54);
 
   // Level
   ctx.fillStyle = '#FFDD44';
