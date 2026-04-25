@@ -1329,6 +1329,8 @@ window.addEventListener('keydown', (e) => {
       saveLeaderboard();
       sfxPowerUp();
       gameState = STATE.TITLE;
+      attractTimer = 0;
+      attractPhase = 0;
     } else if (e.key.length === 1 && /[a-zA-Z]/.test(e.key) && e.key.toLowerCase() !== 'm') {
       hsEntryInitials[hsEntryPos] = e.key.toUpperCase();
       playNote(500, 0.05, 'square', sfxGain, 0.15);
@@ -1353,6 +1355,8 @@ window.addEventListener('keydown', (e) => {
       hsEntryPos = 0;
     } else {
       gameState = STATE.TITLE;
+      attractTimer = 0;
+      attractPhase = 0;
     }
   }
 });
@@ -1362,6 +1366,17 @@ window.addEventListener('keyup', (e) => {
 });
 
 let audioStarted = false;
+
+// Attract mode (title screen cycling)
+const ATTRACT_PHASE_DURATION = 36 * 5; // 5 seconds at 36fps
+let attractTimer = 0;
+let attractPhase = 0; // 0=title, 1=high scores, 2=demo
+// Demo AI state
+let demoActive = false;
+let demoPlayer = { x: GW / 2, y: GH / 2, vx: 0, vy: 0, facingLeft: false, sizeLevel: 1, width: 40, height: 26 };
+let demoEnemies = [];
+let demoTargetX = GW / 2;
+let demoTargetY = GH / 2;
 
 // ============================================================
 //  GAME LOGIC
@@ -2418,6 +2433,142 @@ function drawFlash() {
   }
 }
 
+function initDemo() {
+  demoPlayer = { x: GW / 2, y: GH / 2, vx: 0, vy: 0, facingLeft: false, sizeLevel: 1, width: 40, height: 26 };
+  demoEnemies = [];
+  for (let i = 0; i < 6; i++) {
+    const type = Math.floor(Math.random() * 4);
+    const fromLeft = Math.random() < 0.5;
+    const dims = SIZE_DIMENSIONS[type];
+    demoEnemies.push({
+      x: fromLeft ? -30 - Math.random() * 100 : GW + 30 + Math.random() * 100,
+      y: 50 + Math.random() * (GH - 150),
+      vx: (fromLeft ? 1 : -1) * (0.5 + Math.random() * 1.5),
+      vy: 0,
+      width: dims.w, height: dims.h,
+      type: type,
+      frame: Math.floor(Math.random() * 100),
+      facingLeft: !fromLeft,
+      colorIdx: Math.floor(Math.random() * FISH_PALETTES.length),
+      patternIdx: Math.floor(Math.random() * 3),
+      wobble: Math.random() * Math.PI * 2,
+    });
+  }
+  demoTargetX = GW / 2;
+  demoTargetY = GH / 2;
+}
+
+function updateDemo() {
+  // Pick a new target occasionally
+  if (frameCount % 60 === 0) {
+    demoTargetX = 80 + Math.random() * (GW - 160);
+    demoTargetY = 60 + Math.random() * (GH - 160);
+  }
+
+  // Steer demo player toward target
+  const dx = demoTargetX - demoPlayer.x;
+  const dy = demoTargetY - demoPlayer.y;
+  const accel = 0.3;
+  if (Math.abs(dx) > 5) demoPlayer.vx += (dx > 0 ? accel : -accel);
+  if (Math.abs(dy) > 5) demoPlayer.vy += (dy > 0 ? accel : -accel);
+  demoPlayer.vx *= 0.94;
+  demoPlayer.vy *= 0.94;
+  demoPlayer.x += demoPlayer.vx;
+  demoPlayer.y += demoPlayer.vy;
+  if (demoPlayer.vx > 0.2) demoPlayer.facingLeft = false;
+  else if (demoPlayer.vx < -0.2) demoPlayer.facingLeft = true;
+
+  // Boundaries
+  demoPlayer.x = Math.max(20, Math.min(GW - 20, demoPlayer.x));
+  demoPlayer.y = Math.max(30, Math.min(GH - 70, demoPlayer.y));
+
+  // Update demo enemies
+  for (let i = demoEnemies.length - 1; i >= 0; i--) {
+    const e = demoEnemies[i];
+    e.x += e.vx;
+    e.y += Math.sin(e.wobble + e.frame * 0.03) * 0.3;
+    e.frame++;
+    if ((e.vx > 0 && e.x > GW + 80) || (e.vx < 0 && e.x < -80)) {
+      // Respawn
+      const fromLeft = Math.random() < 0.5;
+      e.x = fromLeft ? -40 : GW + 40;
+      e.y = 50 + Math.random() * (GH - 150);
+      e.vx = (fromLeft ? 1 : -1) * (0.5 + Math.random() * 1.5);
+      e.facingLeft = !fromLeft;
+      e.colorIdx = Math.floor(Math.random() * FISH_PALETTES.length);
+    }
+  }
+}
+
+function drawDemo() {
+  if (!bgCanvas) createBackground();
+  ctx.drawImage(bgCanvas, 0, 0);
+  drawCaustics();
+  drawAmbientBubbles();
+
+  // Draw demo enemies
+  demoEnemies.forEach(e => {
+    const spriteData = createEnemyFish(e.type, e.frame, e.facingLeft, e.colorIdx, e.patternIdx);
+    ctx.drawImage(spriteData.canvas,
+      e.x - e.width / 2,
+      e.y - e.height / 2,
+      e.width,
+      e.height
+    );
+  });
+
+  // Draw demo player
+  const sprite = createPlayerFish(demoPlayer.sizeLevel, frameCount, demoPlayer.facingLeft);
+  ctx.drawImage(sprite,
+    demoPlayer.x - demoPlayer.width / 2,
+    demoPlayer.y - demoPlayer.height / 2,
+    demoPlayer.width,
+    demoPlayer.height
+  );
+
+  // Overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(0, 0, GW, GH);
+
+  // DEMO label
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#88BBDD';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('DEMO', GW / 2, 30);
+}
+
+function drawHighScoreScreen() {
+  if (!bgCanvas) createBackground();
+  ctx.drawImage(bgCanvas, 0, 0);
+  drawCaustics();
+  drawAmbientBubbles();
+
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, GW, GH);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#FFD700';
+  ctx.font = 'bold 28px monospace';
+  ctx.fillText('HIGH SCORES', GW / 2, 50);
+
+  drawLeaderboardTable(80, -1);
+}
+
+function drawAttractPressKey() {
+  const blink = Math.sin(frameCount * 0.08) > 0;
+  if (blink) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#FFDD44';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('PRESS ANY KEY TO SWIM', GW / 2, GH - 30);
+  }
+  ctx.fillStyle = musicEnabled ? '#88FFAA' : '#AA8888';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`MUSIC: ${musicEnabled ? 'ON' : 'OFF'}  [M]`, GW - 8, GH - 8);
+  ctx.textAlign = 'center';
+}
+
 function drawTitleScreen() {
   // Draw background
   if (!bgCanvas) createBackground();
@@ -2451,28 +2602,13 @@ function drawTitleScreen() {
   ctx.font = '16px monospace';
   ctx.fillText('CAN YOU DEFEAT SHARKY?', GW / 2, titleY + 85);
 
-  // Leaderboard
-  drawLeaderboardTable(170, -1);
-
   // Instructions
   ctx.textAlign = 'center';
   ctx.fillStyle = '#AABBCC';
-  ctx.font = '11px monospace';
-  ctx.fillText('ARROWS/WASD: SWIM   SPACE: DART   M: MUSIC', GW / 2, 400);
-  ctx.fillText('EAT SMALLER FISH \u2022 AVOID BIGGER FISH \u2022 BITE SHARK\'S TAIL', GW / 2, 416);
-
-  const blink = Math.sin(frameCount * 0.08) > 0;
-  if (blink) {
-    ctx.fillStyle = '#FFDD44';
-    ctx.font = 'bold 18px monospace';
-    ctx.fillText('PRESS ANY KEY TO SWIM', GW / 2, 450);
-  }
-
-  ctx.fillStyle = musicEnabled ? '#88FFAA' : '#AA8888';
-  ctx.font = '11px monospace';
-  ctx.textAlign = 'right';
-  ctx.fillText(`MUSIC: ${musicEnabled ? 'ON' : 'OFF'}  [M]`, GW - 8, GH - 8);
-  ctx.textAlign = 'center';
+  ctx.font = '12px monospace';
+  ctx.fillText('ARROWS/WASD: SWIM   SPACE: DART   M: MUSIC', GW / 2, 200);
+  ctx.fillText('EAT SMALLER FISH \u2022 AVOID BIGGER FISH', GW / 2, 220);
+  ctx.fillText('BITE THE SHARK\'S TAIL TO DEFEAT IT!', GW / 2, 240);
 }
 
 function drawGameOver() {
@@ -2619,6 +2755,16 @@ function update() {
   frameCount++;
 
   switch (gameState) {
+    case STATE.TITLE:
+      attractTimer++;
+      if (attractTimer >= ATTRACT_PHASE_DURATION) {
+        attractTimer = 0;
+        attractPhase = (attractPhase + 1) % 3;
+        if (attractPhase === 2) initDemo();
+      }
+      if (attractPhase === 2) updateDemo();
+      break;
+
     case STATE.PLAYING:
       updatePlayer();
       updateEnemies();
@@ -2653,14 +2799,25 @@ function update() {
 function render() {
   // Background — regenerate when level changes (deeper = darker navy)
   if (!bgCanvas || bgLevel !== level) createBackground();
+
+  if (gameState === STATE.TITLE) {
+    // Attract mode screens draw their own backgrounds
+    if (attractPhase === 0) {
+      drawTitleScreen();
+    } else if (attractPhase === 1) {
+      drawHighScoreScreen();
+    } else {
+      drawDemo();
+    }
+    drawAttractPressKey();
+    return;
+  }
+
   ctx.drawImage(bgCanvas, 0, 0);
   drawCaustics();
   drawAmbientBubbles();
 
   switch (gameState) {
-    case STATE.TITLE:
-      drawTitleScreen();
-      break;
 
     case STATE.PLAYING:
     case STATE.DYING:
