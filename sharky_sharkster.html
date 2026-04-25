@@ -99,6 +99,9 @@ function playNoteAt(freq, startTime, duration, type = 'square', gainNode = music
   g.connect(gainNode);
   osc.start(startTime);
   osc.stop(startTime + duration + 0.05);
+  if (gainNode === musicGain) {
+    activeMusicNodes.push({ osc, gain: g });
+  }
 }
 
 // Sound Effects
@@ -163,6 +166,7 @@ let currentMusic = null;
 let musicPlaying = false;
 let musicTimeout = null;
 let musicEnabled = true;
+let activeMusicNodes = []; // track scheduled oscillators for clean stop
 
 const NOTE_FREQS = {
   C3: 130.81, D3: 146.83, Eb3: 155.56, E3: 164.81, F3: 174.61, G3: 196.00, A3: 220.00, Bb3: 233.08, B3: 246.94,
@@ -314,6 +318,15 @@ function stopMusic() {
     clearTimeout(musicTimeout);
     musicTimeout = null;
   }
+  // Stop all scheduled music oscillators immediately
+  activeMusicNodes.forEach(({ osc, gain }) => {
+    try {
+      gain.gain.cancelScheduledValues(0);
+      gain.gain.setValueAtTime(0, audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.01);
+    } catch(e) {} // ignore if already stopped
+  });
+  activeMusicNodes = [];
   currentMusic = null;
 }
 
