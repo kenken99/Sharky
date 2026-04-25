@@ -56,8 +56,9 @@ let musicGain = null;
 let sfxGain = null;
 
 function initAudio() {
-  if (audioCtx) return;
+  if (audioCtx) { audioCtx.resume(); return; }
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx.resume();
   masterGain = audioCtx.createGain();
   masterGain.gain.value = 0.5;
   masterGain.connect(audioCtx.destination);
@@ -161,7 +162,7 @@ function sfxDart() {
 let currentMusic = null;
 let musicPlaying = false;
 let musicTimeout = null;
-let musicEnabled = localStorage.getItem('sharkyMusicEnabled') !== 'false';
+let musicEnabled = true;
 
 const NOTE_FREQS = {
   C3: 130.81, D3: 146.83, E3: 164.81, F3: 174.61, G3: 196.00, A3: 220.00, B3: 246.94,
@@ -260,7 +261,6 @@ function stopMusic() {
 
 function toggleMusic() {
   musicEnabled = !musicEnabled;
-  localStorage.setItem('sharkyMusicEnabled', musicEnabled);
   if (!musicEnabled) {
     const resumeType = currentMusic;
     stopMusic();
