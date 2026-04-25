@@ -1158,6 +1158,21 @@ let comboTimer = 0;
 let sharkDefeats = 0;
 let sharkBitesThisPatrol = 0;
 
+// Starfish immunity power-up
+const starfish = {
+  active: false,
+  x: 0,
+  y: 0,
+  vx: 0,
+  width: 24,
+  height: 24,
+  bobOffset: 0,
+  rotation: 0,
+};
+let starfishImmunityTimer = 0;
+const STARFISH_IMMUNITY_DURATION = 36 * 20; // 20 seconds at 36fps
+let lastStarfishScoreThreshold = 0;
+
 // Power-up: Super Fishfood Jar
 const powerUp = {
   active: false,
@@ -1299,6 +1314,9 @@ function startGame() {
   sharkDefeats = 0;
   sharkBitesThisPatrol = 0;
   powerUp.active = false;
+  starfish.active = false;
+  starfishImmunityTimer = 0;
+  lastStarfishScoreThreshold = 0;
   flashTimer = 0;
   startMusic('happy');
 }
@@ -1495,9 +1513,12 @@ function checkCollisions() {
         // Player is clearly bigger - eat the fish!
         eatFish(e, i);
       } else if (sizeRatio < 0.85) {
-        // Enemy is clearly bigger - get eaten!
-        playerDeath();
-        return;
+        if (starfishImmunityTimer > 0) {
+          bounceFish(e);
+        } else {
+          playerDeath();
+          return;
+        }
       } else {
         // Similar size - bounce off each other!
         bounceFish(e);
@@ -1524,8 +1545,17 @@ function checkCollisions() {
         }
         return; // Never die from tail contact
       }
-      // Front/body collision - shark eats player
-      playerDeath();
+      // Front/body collision - shark eats player (unless starfish shield)
+      if (starfishImmunityTimer > 0) {
+        const pushDx = player.x - shark.x;
+        const pushDy = player.y - shark.y;
+        const pushDist = Math.sqrt(pushDx * pushDx + pushDy * pushDy) || 1;
+        player.vx += (pushDx / pushDist) * 5;
+        player.vy += (pushDy / pushDist) * 5;
+        sfxBounce();
+      } else {
+        playerDeath();
+      }
     }
   }
 }
@@ -1693,6 +1723,125 @@ function collectPowerUp() {
     levelUpTimer = 60;
     spawnEatParticles(player.x, player.y, '#FFD700');
   }
+}
+
+// Starfish functions
+function spawnStarfish() {
+  if (starfish.active) return;
+  starfish.active = true;
+  const fromLeft = Math.random() < 0.5;
+  starfish.x = fromLeft ? -20 : GW + 20;
+  starfish.y = 60 + Math.random() * (GH - 180);
+  starfish.vx = fromLeft ? 0.6 + Math.random() * 0.4 : -(0.6 + Math.random() * 0.4);
+  starfish.bobOffset = Math.random() * Math.PI * 2;
+  starfish.rotation = 0;
+}
+
+function updateStarfish() {
+  // Check if score crossed a new 2000-point threshold
+  const threshold = Math.floor(score / 2000) * 2000;
+  if (threshold > 0 && threshold > lastStarfishScoreThreshold && !starfish.active && starfishImmunityTimer <= 0) {
+    lastStarfishScoreThreshold = threshold;
+    spawnStarfish();
+  }
+
+  if (starfish.active) {
+    starfish.x += starfish.vx;
+    starfish.y += Math.sin(starfish.bobOffset + frameCount * 0.03) * 0.4;
+    starfish.rotation += 0.015;
+    // Remove if off screen
+    if ((starfish.vx > 0 && starfish.x > GW + 40) || (starfish.vx < 0 && starfish.x < -40)) {
+      starfish.active = false;
+    }
+  }
+
+  if (starfishImmunityTimer > 0) starfishImmunityTimer--;
+}
+
+function checkStarfishCollision() {
+  if (!starfish.active) return;
+  const dx = player.x - starfish.x;
+  const dy = player.y - starfish.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < (player.width + starfish.width) * 0.4) {
+    collectStarfish();
+  }
+}
+
+function collectStarfish() {
+  starfish.active = false;
+  sfxPowerUp();
+  spawnEatParticles(starfish.x, starfish.y, '#FF88FF');
+  spawnScorePopup(starfish.x, starfish.y - 20, 'STARFISH SHIELD!');
+  starfishImmunityTimer = STARFISH_IMMUNITY_DURATION;
+  flashTimer = 20;
+}
+
+function drawStarfish() {
+  if (!starfish.active) return;
+  const bob = Math.sin(starfish.bobOffset + frameCount * 0.03) * 4;
+  const px = starfish.x;
+  const py = starfish.y + bob;
+
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(starfish.rotation);
+
+  // Glow
+  const glowAlpha = 0.2 + Math.sin(frameCount * 0.1) * 0.1;
+  ctx.globalAlpha = glowAlpha;
+  ctx.fillStyle = '#FF88FF';
+  ctx.beginPath();
+  ctx.arc(0, 0, 18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Draw 5-pointed star shape
+  const outerR = 11;
+  const innerR = 5;
+  ctx.fillStyle = '#FF6699';
+  ctx.strokeStyle = '#CC3366';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? outerR : innerR;
+    const angle = (Math.PI / 2) + (i * Math.PI / 5);
+    const sx = Math.cos(angle) * r;
+    const sy = -Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(sx, sy);
+    else ctx.lineTo(sx, sy);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Center dot
+  ctx.fillStyle = '#FFAACC';
+  ctx.beginPath();
+  ctx.arc(0, 0, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Small dots on each arm
+  ctx.fillStyle = '#FFCCDD';
+  for (let i = 0; i < 5; i++) {
+    const angle = (Math.PI / 2) + (i * 2 * Math.PI / 5);
+    const dx = Math.cos(angle) * 7;
+    const dy = -Math.sin(angle) * 7;
+    ctx.beginPath();
+    ctx.arc(dx, dy, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+
+  // Floating arrow
+  const arrowBob = Math.sin(frameCount * 0.12) * 3;
+  ctx.fillStyle = '#FF88FF';
+  ctx.beginPath();
+  ctx.moveTo(px, py - 18 + arrowBob);
+  ctx.lineTo(px - 4, py - 24 + arrowBob);
+  ctx.lineTo(px + 4, py - 24 + arrowBob);
+  ctx.fill();
 }
 
 function drawPowerUp() {
@@ -1962,6 +2111,18 @@ function drawHUD() {
   ctx.fillStyle = '#AAAACC';
   ctx.fillText(`HI: ${highScore}`, 12, 54);
 
+  // Starfish immunity timer
+  if (starfishImmunityTimer > 0) {
+    const secs = Math.ceil(starfishImmunityTimer / 36);
+    const blink = starfishImmunityTimer < 36 * 5 ? (frameCount % 10 < 5) : true;
+    if (blink) {
+      ctx.fillStyle = '#FF88FF';
+      ctx.font = 'bold 12px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`SHIELD: ${secs}s`, 12, 68);
+    }
+  }
+
   // Level
   ctx.fillStyle = '#FFDD44';
   ctx.font = 'bold 14px monospace';
@@ -2051,13 +2212,51 @@ function drawHUD() {
 function drawPlayer() {
   if (player.invincible > 0 && frameCount % 6 < 3) return; // Flash when invincible
 
+  // Starfish immunity glow
+  if (starfishImmunityTimer > 0) {
+    const pulse = 0.3 + Math.sin(frameCount * 0.15) * 0.15;
+    const glowSize = Math.max(player.width, player.height) * 0.9;
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = '#FF88FF';
+    ctx.shadowColor = '#FF88FF';
+    ctx.shadowBlur = 20;
+    ctx.beginPath();
+    ctx.ellipse(player.x, player.y, glowSize, glowSize * 0.7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   const sprite = createPlayerFish(player.sizeLevel, frameCount, player.facingLeft);
-  ctx.drawImage(sprite,
-    player.x - player.width / 2,
-    player.y - player.height / 2,
-    player.width,
-    player.height
-  );
+
+  // Brighten player during starfish immunity
+  if (starfishImmunityTimer > 0) {
+    ctx.save();
+    ctx.drawImage(sprite,
+      player.x - player.width / 2,
+      player.y - player.height / 2,
+      player.width,
+      player.height
+    );
+    // Overlay bright tint
+    ctx.globalAlpha = 0.25 + Math.sin(frameCount * 0.12) * 0.1;
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = '#FF99FF';
+    ctx.fillRect(
+      player.x - player.width / 2,
+      player.y - player.height / 2,
+      player.width,
+      player.height
+    );
+    ctx.restore();
+  } else {
+    ctx.drawImage(sprite,
+      player.x - player.width / 2,
+      player.y - player.height / 2,
+      player.width,
+      player.height
+    );
+  }
 }
 
 function drawEnemies() {
@@ -2256,6 +2455,8 @@ function update() {
       checkCollisions();
       updatePowerUp();
       checkPowerUpCollision();
+      updateStarfish();
+      checkStarfishCollision();
 
       // Combo decay
       if (comboTimer > 0) {
@@ -2295,6 +2496,7 @@ function render() {
       drawEnemies();
       drawShark();
       drawPowerUp();
+      drawStarfish();
       if (gameState !== STATE.DYING) drawPlayer();
       updateParticles();
       drawParticles();
