@@ -1215,6 +1215,7 @@ const STATE = {
   LEVEL_UP: 4,
   PAUSED: 5,
   HIGH_SCORE_ENTRY: 6,
+  BONUS: 7,
 };
 
 let gameState = STATE.TITLE;
@@ -1764,6 +1765,255 @@ function drawFrozenEffect(x, y, w, h) {
   ctx.restore();
 }
 
+// ============================================================
+//  BONUS ROUND
+// ============================================================
+const BONUS_DURATION = 36 * 20; // 20 seconds at 36fps
+const PELLET_COLORS = ['#FF6644', '#FFAA22', '#FF4488', '#44CC44', '#4488DD',
+  '#EECC33', '#33CCAA', '#EE5588', '#9955DD', '#DD4444',
+  '#44BBCC', '#DD8855', '#77BB55', '#CC77DD'];
+let bonusPellets = [];
+let bonusTimer = 0;
+let bonusScore = 0;
+let bonusLevelBefore = 0;
+let bonusBgCanvas = null;
+
+function startBonusRound() {
+  bonusLevelBefore = level;
+  gameState = STATE.BONUS;
+  bonusTimer = BONUS_DURATION;
+  bonusScore = 0;
+  bonusPellets = [];
+  // Fill screen with pellets
+  const cols = 12;
+  const rows = 8;
+  const marginX = 50;
+  const marginY = 60;
+  const spacingX = (GW - marginX * 2) / (cols - 1);
+  const spacingY = (GH - marginY - 80) / (rows - 1);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      bonusPellets.push({
+        x: marginX + c * spacingX + (Math.random() - 0.5) * 20,
+        y: marginY + r * spacingY + (Math.random() - 0.5) * 15,
+        color: PELLET_COLORS[Math.floor(Math.random() * PELLET_COLORS.length)],
+        size: 4 + Math.random() * 3,
+        active: true,
+        bobOffset: Math.random() * Math.PI * 2,
+        points: 50 + Math.floor(Math.random() * 4) * 25,
+      });
+    }
+  }
+  // Create bright bonus background
+  createBonusBackground();
+  // Stop normal enemies/eels
+  enemies = [];
+  eels = [];
+  playerFrozenTimer = 0;
+  starfish.active = false;
+  powerUp.active = false;
+}
+
+function createBonusBackground() {
+  bonusBgCanvas = document.createElement('canvas');
+  bonusBgCanvas.width = GW;
+  bonusBgCanvas.height = GH;
+  const bx = bonusBgCanvas.getContext('2d');
+  // Bright blue-green ocean
+  const grad = bx.createLinearGradient(0, 0, 0, GH);
+  grad.addColorStop(0, '#1a8acf');
+  grad.addColorStop(0.3, '#1570aa');
+  grad.addColorStop(0.6, '#0e5a8a');
+  grad.addColorStop(1, '#083a60');
+  bx.fillStyle = grad;
+  bx.fillRect(0, 0, GW, GH);
+  // Light rays
+  bx.globalAlpha = 0.08;
+  for (let i = 0; i < 8; i++) {
+    const rx = 50 + Math.random() * (GW - 100);
+    bx.fillStyle = '#FFFFFF';
+    bx.beginPath();
+    bx.moveTo(rx - 10, 0);
+    bx.lineTo(rx + 10, 0);
+    bx.lineTo(rx + 40 + Math.random() * 30, GH);
+    bx.lineTo(rx - 40 - Math.random() * 30, GH);
+    bx.fill();
+  }
+  bx.globalAlpha = 1;
+  // Sandy bottom
+  bx.fillStyle = '#c8a860';
+  bx.fillRect(0, GH - 40, GW, 40);
+  bx.fillStyle = '#d4b870';
+  bx.fillRect(0, GH - 40, GW, 3);
+}
+
+function updateBonusRound() {
+  bonusTimer--;
+
+  // Player movement (reuse normal controls but simplified)
+  const accel = 0.45;
+  const maxSpeed = 3.5 + player.sizeLevel * 0.2;
+  const friction = 0.92;
+
+  if (keys['arrowleft'] || keys['a']) { player.vx -= accel; player.facingLeft = true; }
+  if (keys['arrowright'] || keys['d']) { player.vx += accel; player.facingLeft = false; }
+  if (keys['arrowup'] || keys['w']) player.vy -= accel;
+  if (keys['arrowdown'] || keys['s']) player.vy += accel;
+
+  player.vx *= friction;
+  player.vy *= friction;
+  const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+  if (speed > maxSpeed) {
+    player.vx = (player.vx / speed) * maxSpeed;
+    player.vy = (player.vy / speed) * maxSpeed;
+  }
+  player.x += player.vx;
+  player.y += player.vy;
+
+  const hw = player.width / 2;
+  const hh = player.height / 2;
+  if (player.x < hw) { player.x = hw; player.vx *= -0.5; }
+  if (player.x > GW - hw) { player.x = GW - hw; player.vx *= -0.5; }
+  if (player.y < hh + 10) { player.y = hh + 10; player.vy *= -0.5; }
+  if (player.y > GH - 55 - hh) { player.y = GH - 55 - hh; player.vy *= -0.5; }
+
+  // Check pellet collection
+  let allCollected = true;
+  for (let i = 0; i < bonusPellets.length; i++) {
+    const p = bonusPellets[i];
+    if (!p.active) continue;
+    allCollected = false;
+    const dx = player.x - p.x;
+    const dy = player.y - p.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < (player.width * 0.4 + p.size)) {
+      p.active = false;
+      const pts = p.points;
+      bonusScore += pts;
+      score += pts;
+      sfxEat();
+      spawnEatParticles(p.x, p.y, p.color);
+      spawnScorePopup(p.x, p.y - 10, `+${pts}`);
+    }
+  }
+
+  // Bubble trail
+  if (frameCount % 12 === 0 && (Math.abs(player.vx) > 0.5 || Math.abs(player.vy) > 0.5)) {
+    const bx = player.facingLeft ? player.x + hw : player.x - hw;
+    spawnBubble(bx, player.y);
+  }
+
+  // End bonus round
+  if (bonusTimer <= 0 || allCollected) {
+    endBonusRound();
+  }
+}
+
+function endBonusRound() {
+  gameState = STATE.PLAYING;
+  // Reset background to level 1 style
+  level = bonusLevelBefore;
+  bgLevel = -1; // force background regeneration
+  const savedLevel = level;
+  level = 1;
+  createBackground();
+  level = savedLevel;
+  bgLevel = level; // prevent re-creation with dark style
+  // Resume music
+  if (!musicPlaying || currentMusic !== 'happy') {
+    startMusic('happy');
+  }
+  // Re-initialize shark timer and enemies
+  sharkTimer = 300 + Math.random() * 200;
+}
+
+function drawBonusRound() {
+  // Bright background
+  if (bonusBgCanvas) {
+    ctx.drawImage(bonusBgCanvas, 0, 0);
+  }
+  drawCaustics();
+  drawAmbientBubbles();
+
+  // Draw pellets
+  bonusPellets.forEach(p => {
+    if (!p.active) return;
+    const bob = Math.sin(p.bobOffset + frameCount * 0.08) * 3;
+    const pulse = 1 + Math.sin(frameCount * 0.15 + p.bobOffset) * 0.15;
+
+    // Glow
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y + bob, p.size * pulse * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Pellet
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y + bob, p.size * pulse, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.beginPath();
+    ctx.arc(p.x - p.size * 0.25, p.y + bob - p.size * 0.25, p.size * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Draw player
+  const sprite = createPlayerFish(player.sizeLevel, frameCount, player.facingLeft);
+  ctx.drawImage(sprite,
+    player.x - player.width / 2,
+    player.y - player.height / 2,
+    player.width,
+    player.height
+  );
+
+  // Particles
+  updateParticles();
+  drawParticles();
+
+  // HUD
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#FFD700';
+  ctx.font = 'bold 24px monospace';
+  ctx.fillText('BONUS ROUND!', GW / 2, 30);
+
+  // Timer
+  const secs = Math.ceil(bonusTimer / 36);
+  const timerBlink = secs <= 5 ? (frameCount % 10 < 5) : true;
+  ctx.fillStyle = secs <= 5 ? '#FF4444' : '#FFFFFF';
+  ctx.font = 'bold 18px monospace';
+  if (timerBlink) {
+    ctx.fillText(`TIME: ${secs}`, GW / 2, 55);
+  }
+
+  // Bonus score
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText(`BONUS: ${bonusScore}`, GW / 2, 75);
+
+  // Pellets remaining
+  const remaining = bonusPellets.filter(p => p.active).length;
+  ctx.fillStyle = '#AADDFF';
+  ctx.font = '12px monospace';
+  ctx.fillText(`PELLETS: ${remaining}`, GW / 2, 92);
+
+  // Main score
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText(`SCORE: ${score}`, 12, 24);
+
+  // Music indicator
+  ctx.textAlign = 'right';
+  ctx.fillStyle = musicEnabled ? 'rgba(136,255,170,0.6)' : 'rgba(170,136,136,0.6)';
+  ctx.font = '9px monospace';
+  ctx.fillText(`${musicEnabled ? '\u266A' : 'X'} MUSIC [M]`, GW - 8, GH - 8);
+}
+
 function updatePlayer() {
   if (playerFrozenTimer > 0) {
     playerFrozenTimer--;
@@ -2012,7 +2262,7 @@ function eatFish(e, index) {
     spawnEatParticles(player.x, player.y, '#FFD700');
     flashTimer = 20;
 
-    // Level advances with every size-up (levels 1-6)
+    // Level advances with every size-up (levels 1-7)
     level = nextSize + 1;
 
     // Cycle to next shanty
@@ -2020,6 +2270,11 @@ function eatFish(e, index) {
     if (musicPlaying && currentMusic === 'happy') {
       stopMusic();
       startMusic('happy');
+    }
+
+    // Bonus round every 5th level
+    if (level % 5 === 0) {
+      startBonusRound();
     }
   }
 
@@ -3144,6 +3399,10 @@ function update() {
       }
       return; // Skip normal render, handle below
 
+    case STATE.BONUS:
+      updateBonusRound();
+      break;
+
     case STATE.GAME_OVER:
       if (gameOverTimer > 0) gameOverTimer--;
       break;
@@ -3164,6 +3423,11 @@ function render() {
       drawDemo();
     }
     drawAttractPressKey();
+    return;
+  }
+
+  if (gameState === STATE.BONUS) {
+    drawBonusRound();
     return;
   }
 
@@ -3199,6 +3463,10 @@ function render() {
 
     case STATE.HIGH_SCORE_ENTRY:
       drawHighScoreEntry();
+      break;
+
+    case STATE.BONUS:
+      drawBonusRound();
       break;
   }
 }
