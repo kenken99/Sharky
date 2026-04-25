@@ -171,9 +171,10 @@ const NOTE_FREQS = {
   C6: 1046.50
 };
 
-// Drunken Sailor sea shanty melody (D minor)
-const HAPPY_MELODY = [
-  // "What shall we do with the drunken sailor" (verse, repeated pattern)
+// Sea shanty collection — cycles on level up
+// 1. Drunken Sailor (D minor)
+const SHANTY_1_MELODY = [
+  // "What shall we do with the drunken sailor" (verse)
   ['D4',0.2],['D4',0.2],['D4',0.2],['E4',0.2],['F4',0.2],['F4',0.2],['F4',0.2],['G4',0.2],
   ['A4',0.2],['A4',0.2],['A4',0.2],['G4',0.2],['F4',0.2],['F4',0.2],['E4',0.2],['D4',0.2],
   ['D4',0.2],['D4',0.2],['D4',0.2],['E4',0.2],['F4',0.2],['F4',0.2],['F4',0.2],['G4',0.2],
@@ -184,19 +185,71 @@ const HAPPY_MELODY = [
   ['D4',0.2],['D4',0.2],['D4',0.2],['E4',0.2],['F4',0.2],['F4',0.2],['F4',0.2],['G4',0.2],
   ['A4',0.4],['G4',0.2],['F4',0.2],['E4',0.4],['D4',0.6],
 ];
-
-const HAPPY_BASS = [
-  // Verse bass — driving D minor feel
+const SHANTY_1_BASS = [
   ['D3',0.4],['A3',0.4],['D3',0.4],['A3',0.4],
   ['D3',0.4],['A3',0.4],['D3',0.4],['A3',0.4],
   ['D3',0.4],['A3',0.4],['D3',0.4],['A3',0.4],
   ['D3',0.4],['A3',0.4],['D3',0.8],
-  // Chorus bass
   ['F3',0.4],['F3',0.4],['C3',0.4],['F3',0.4],
   ['C3',0.4],['C3',0.4],['G3',0.4],['C3',0.4],
   ['D3',0.4],['A3',0.4],['D3',0.4],['A3',0.4],
   ['D3',0.4],['A3',0.4],['D3',0.8],
 ];
+
+// 2. Blow the Man Down (C major, 3/4 waltz time)
+const SHANTY_2_MELODY = [
+  // "Come all ye young fellows that follow the sea"
+  ['C4',0.3],['E4',0.3],['G4',0.3],['G4',0.3],['A4',0.3],['G4',0.3],
+  ['E4',0.3],['E4',0.3],['F4',0.3],['E4',0.3],['D4',0.3],['C4',0.3],
+  ['C4',0.3],['E4',0.3],['G4',0.3],['G4',0.3],['A4',0.3],['G4',0.3],
+  ['F4',0.3],['E4',0.3],['D4',0.6],['C4',0.3],
+  // "Give me some time to blow the man down"
+  ['G4',0.3],['G4',0.3],['A4',0.3],['B4',0.3],['C5',0.3],['B4',0.3],
+  ['A4',0.3],['G4',0.3],['F4',0.3],['E4',0.3],['D4',0.3],['E4',0.3],
+  ['C4',0.3],['E4',0.3],['G4',0.3],['F4',0.3],['E4',0.3],['D4',0.3],
+  ['C4',0.6],['C4',0.3],['C4',0.3],
+];
+const SHANTY_2_BASS = [
+  ['C3',0.45],['G3',0.45],['C3',0.45],['G3',0.45],
+  ['C3',0.45],['E3',0.45],['F3',0.45],['G3',0.45],
+  ['C3',0.45],['G3',0.45],['C3',0.45],['G3',0.45],
+  ['F3',0.45],['G3',0.45],['C3',0.9],
+  ['G3',0.45],['G3',0.45],['G3',0.45],['G3',0.45],
+  ['F3',0.45],['C3',0.45],['G3',0.45],['C3',0.45],
+  ['C3',0.45],['E3',0.45],['F3',0.45],['G3',0.45],
+  ['C3',0.9],['C3',0.45],
+];
+
+// 3. Leave Her Johnny (G minor, melancholy)
+const SHANTY_3_MELODY = [
+  // "I thought I heard the old man say"
+  ['G4',0.3],['G4',0.3],['Bb4',0.3],['A4',0.3],['G4',0.3],['F4',0.3],
+  ['D4',0.3],['D4',0.3],['F4',0.3],['G4',0.6],
+  ['Bb4',0.3],['Bb4',0.3],['A4',0.3],['G4',0.3],['F4',0.3],['G4',0.3],
+  ['A4',0.6],['G4',0.3],['F4',0.3],
+  // "Leave her, Johnny, leave her"
+  ['G4',0.3],['A4',0.3],['Bb4',0.3],['Bb4',0.3],['A4',0.3],['G4',0.3],
+  ['F4',0.3],['D4',0.3],['F4',0.3],['G4',0.6],
+  ['Bb4',0.3],['A4',0.3],['G4',0.3],['F4',0.3],['D4',0.3],['F4',0.3],
+  ['G4',0.9],['G4',0.3],
+];
+const SHANTY_3_BASS = [
+  ['G3',0.45],['D3',0.45],['G3',0.45],['D3',0.45],
+  ['Bb3',0.45],['G3',0.45],['D3',0.9],
+  ['Bb3',0.45],['G3',0.45],['D3',0.45],['G3',0.45],
+  ['D3',0.45],['G3',0.45],['D3',0.45],
+  ['G3',0.45],['D3',0.45],['Bb3',0.45],['G3',0.45],
+  ['D3',0.45],['Bb3',0.45],['G3',0.9],
+  ['Bb3',0.45],['D3',0.45],['G3',0.45],['D3',0.45],
+  ['G3',0.9],['G3',0.45],
+];
+
+const SHANTIES = [
+  { melody: SHANTY_1_MELODY, bass: SHANTY_1_BASS, name: 'Drunken Sailor' },
+  { melody: SHANTY_2_MELODY, bass: SHANTY_2_BASS, name: 'Blow the Man Down' },
+  { melody: SHANTY_3_MELODY, bass: SHANTY_3_BASS, name: 'Leave Her Johnny' },
+];
+let currentShantyIndex = 0;
 
 // Jaws-style shark theme (E-F pattern, building tension)
 const SHARK_MELODY = [
@@ -234,7 +287,8 @@ function playMusicLoop(melody, bass, type = 'happy') {
       if (currentMusic === 'shark') {
         playMusicLoop(SHARK_MELODY, SHARK_BASS, 'shark');
       } else {
-        playMusicLoop(HAPPY_MELODY, HAPPY_BASS, 'happy');
+        const s = SHANTIES[currentShantyIndex % SHANTIES.length];
+        playMusicLoop(s.melody, s.bass, 'happy');
       }
     }
   }, loopDuration * 1000 - 50);
@@ -249,7 +303,8 @@ function startMusic(type = 'happy') {
   if (type === 'shark') {
     playMusicLoop(SHARK_MELODY, SHARK_BASS, 'shark');
   } else {
-    playMusicLoop(HAPPY_MELODY, HAPPY_BASS, 'happy');
+    const s = SHANTIES[currentShantyIndex % SHANTIES.length];
+    playMusicLoop(s.melody, s.bass, 'happy');
   }
 }
 
@@ -1392,6 +1447,7 @@ function startGame() {
   score = 0;
   lives = 5;
   level = 1;
+  currentShantyIndex = 0;
   player.x = GW / 2;
   player.y = GH / 2;
   player.vx = 0;
@@ -1684,6 +1740,13 @@ function eatFish(e, index) {
 
     // Level advances with every size-up (levels 1-6)
     level = nextSize + 1;
+
+    // Cycle to next shanty
+    currentShantyIndex = (currentShantyIndex + 1) % SHANTIES.length;
+    if (musicPlaying && currentMusic === 'happy') {
+      stopMusic();
+      startMusic('happy');
+    }
   }
 
   // Effects
@@ -2750,6 +2813,9 @@ function drawLevelUpEffect() {
     ctx.fillStyle = `rgba(255,215,0,${alpha})`;
     ctx.font = `bold ${24 + (60 - levelUpTimer) * 0.5}px monospace`;
     ctx.fillText('SIZE UP!', GW / 2, GH / 2 - 40);
+    ctx.font = '14px monospace';
+    ctx.fillStyle = `rgba(170,220,255,${alpha})`;
+    ctx.fillText(`\u266B ${SHANTIES[currentShantyIndex % SHANTIES.length].name}`, GW / 2, GH / 2 - 15);
     levelUpTimer--;
   }
 }
