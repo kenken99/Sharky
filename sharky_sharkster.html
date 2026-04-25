@@ -235,14 +235,11 @@ function playMusicLoop(melody, bass, type = 'happy') {
 }
 
 function startMusic(type = 'happy') {
-  if (!musicEnabled) {
-    currentMusic = type;
-    return;
-  }
   if (currentMusic === type && musicPlaying) return;
   stopMusic();
   currentMusic = type;
   musicPlaying = true;
+  if (musicGain) musicGain.gain.value = musicEnabled ? 0.3 : 0;
   if (type === 'shark') {
     playMusicLoop(SHARK_MELODY, SHARK_BASS, 'shark');
   } else {
@@ -262,13 +259,14 @@ function stopMusic() {
 function toggleMusic() {
   musicEnabled = !musicEnabled;
   if (!musicEnabled) {
-    const resumeType = currentMusic;
-    stopMusic();
-    currentMusic = resumeType;
+    if (musicGain) musicGain.gain.value = 0;
   } else {
-    const resumeType = currentMusic || (sharkActive ? 'shark' : 'happy');
-    currentMusic = null;
-    startMusic(resumeType);
+    if (musicGain) musicGain.gain.value = 0.3;
+    if (!musicPlaying) {
+      const type = currentMusic || (sharkActive ? 'shark' : 'happy');
+      currentMusic = null;
+      startMusic(type);
+    }
   }
 }
 
