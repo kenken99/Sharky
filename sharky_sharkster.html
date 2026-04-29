@@ -3478,7 +3478,7 @@ let accumulator = 0;
 
 function gameLoop(timestamp) {
   if (!lastTime) lastTime = timestamp;
-  const delta = timestamp - lastTime;
+  const delta = Math.min(timestamp - lastTime, 250);
   lastTime = timestamp;
   accumulator += delta;
 
