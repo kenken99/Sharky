@@ -347,46 +347,61 @@ function toggleMusic() {
 // ============================================================
 //  PIXEL ART SPRITE SYSTEM
 // ============================================================
-const spriteCache = {};
+// Sprite cache. Bounded: enemy sprites are keyed by type/colour/shape/frame/facing,
+// so an unbounded cache would keep growing as new combinations spawn. The live working
+// set (player + shark + on-screen enemies) is far below the limit, so evictions are rare.
+const SPRITE_CACHE_LIMIT = 1024;
+const spriteCache = new Map();
 
-function createSprite(width, height, drawFunc) {
-  const key = drawFunc.toString();
-  if (spriteCache[key]) return spriteCache[key];
-  const c = document.createElement('canvas');
-  c.width = width;
-  c.height = height;
-  const cx = c.getContext('2d');
-  cx.imageSmoothingEnabled = false;
-  drawFunc(cx, width, height);
-  spriteCache[key] = c;
-  return c;
+function cacheSprite(key, canvas) {
+  if (spriteCache.size >= SPRITE_CACHE_LIMIT) {
+    spriteCache.delete(spriteCache.keys().next().value); // oldest insertion
+  }
+  spriteCache.set(key, canvas);
+  return canvas;
 }
+
+// Sprites are pre-rendered per animation-cycle position, so every wag/mouth cycle has to
+// close exactly over its cycle length or the sprite would visibly pop as the loop wraps.
+const TAU = Math.PI * 2;
+const PLAYER_ANIM_FRAMES = 24;
+const ENEMY_ANIM_FRAMES = 8;
+const SHARK_ANIM_FRAMES = 16;
 
 function drawPixel(cx, x, y, color, size = 1) {
   cx.fillStyle = color;
   cx.fillRect(x * size, y * size, size, size);
 }
 
-function drawPixels(cx, pixels, size = 2) {
-  pixels.forEach(([x, y, color]) => drawPixel(cx, x, y, color, size));
-}
-
 // Player fish sprites at different sizes
+const PLAYER_SIZES = [
+  { w: 16, h: 10 },
+  { w: 20, h: 13 },
+  { w: 26, h: 16 },
+  { w: 32, h: 20 },
+  { w: 40, h: 24 },
+  { w: 48, h: 28 },
+];
+
+// Colors based on size
+const PLAYER_BODY_COLORS = [
+  ['#FFD700', '#FFA500', '#FF8C00'], // gold/orange tiny
+  ['#FFD700', '#FFA500', '#FF6347'], // gold/orange/red
+  ['#FF6347', '#FF4500', '#CD3700'], // red/orange
+  ['#FF4500', '#FF2200', '#CC1100'], // deeper red
+  ['#E02020', '#CC0000', '#990000'], // bold red
+  ['#FF1493', '#FF0066', '#CC0044'], // hot pink champion
+];
+
 function createPlayerFish(sizeLevel, frame, facingLeft) {
-  const sizes = [
-    { w: 16, h: 10 },
-    { w: 20, h: 13 },
-    { w: 26, h: 16 },
-    { w: 32, h: 20 },
-    { w: 40, h: 24 },
-    { w: 48, h: 28 },
-  ];
-  const s = sizes[sizeLevel] || sizes[0];
+  const s = PLAYER_SIZES[sizeLevel] || PLAYER_SIZES[0];
   const ps = 2;
   const cw = s.w * ps;
   const ch = s.h * ps;
-  const key = `player_${sizeLevel}_${frame}_${facingLeft}`;
-  if (spriteCache[key]) return spriteCache[key];
+  const af = frame % PLAYER_ANIM_FRAMES; // bounded animation frame => bounded cache
+  const key = `player_${sizeLevel}_${af}_${facingLeft}`;
+  const cached = spriteCache.get(key);
+  if (cached) return cached;
 
   const c = document.createElement('canvas');
   c.width = cw;
@@ -394,16 +409,7 @@ function createPlayerFish(sizeLevel, frame, facingLeft) {
   const cx = c.getContext('2d');
   cx.imageSmoothingEnabled = false;
 
-  // Colors based on size
-  const bodyColors = [
-    ['#FFD700', '#FFA500', '#FF8C00'], // gold/orange tiny
-    ['#FFD700', '#FFA500', '#FF6347'], // gold/orange/red
-    ['#FF6347', '#FF4500', '#CD3700'], // red/orange
-    ['#FF4500', '#FF2200', '#CC1100'], // deeper red
-    ['#E02020', '#CC0000', '#990000'], // bold red
-    ['#FF1493', '#FF0066', '#CC0044'], // hot pink champion
-  ];
-  const [bodyLight, bodyMid, bodyDark] = bodyColors[sizeLevel] || bodyColors[0];
+  const [bodyLight, bodyMid, bodyDark] = PLAYER_BODY_COLORS[sizeLevel] || PLAYER_BODY_COLORS[0];
   const bellyColor = '#FFF8DC';
   const eyeWhite = '#FFFFFF';
   const eyePupil = '#111111';
@@ -436,7 +442,7 @@ function createPlayerFish(sizeLevel, frame, facingLeft) {
   // Tail
   const tailX = facingLeft ? s.w - 3 : 1;
   const tailDir = facingLeft ? 1 : -1;
-  const tailWag = Math.sin(frame * 0.5) * 1.5;
+  const tailWag = Math.sin(af * (TAU / PLAYER_ANIM_FRAMES) * 2) * 1.5; // 2 wags per cycle
   for (let i = 0; i < 4; i++) {
     drawPixel(cx, tailX + tailDir * i, hh - 2 + tailWag - i, tailColor, ps);
     drawPixel(cx, tailX + tailDir * i, hh + 2 + tailWag + i, tailColor, ps);
@@ -444,7 +450,7 @@ function createPlayerFish(sizeLevel, frame, facingLeft) {
   }
 
   // Dorsal fin
-  const finWag = Math.sin(frame * 0.3) * 0.5;
+  const finWag = Math.sin(af * (TAU / PLAYER_ANIM_FRAMES)) * 0.5;
   for (let i = 0; i < 3; i++) {
     drawPixel(cx, hw - 1 + i, 1 + finWag, finColor, ps);
     if (i < 2) drawPixel(cx, hw + i, 0 + finWag, finColor, ps);
@@ -463,7 +469,7 @@ function createPlayerFish(sizeLevel, frame, facingLeft) {
 
   // Mouth
   const mouthX = facingLeft ? 1 : s.w - 3;
-  const mouthOpen = frame % 20 < 10;
+  const mouthOpen = af < PLAYER_ANIM_FRAMES / 2;
   if (mouthOpen) {
     drawPixel(cx, mouthX, hh, '#CC0000', ps);
     drawPixel(cx, mouthX + (facingLeft ? 1 : -1), hh, '#CC0000', ps);
@@ -474,8 +480,7 @@ function createPlayerFish(sizeLevel, frame, facingLeft) {
   drawPixel(cx, blushX, hh + 1, '#FF8888', ps);
   drawPixel(cx, blushX + 1, hh + 1, '#FF8888', ps);
 
-  spriteCache[key] = c;
-  return c;
+  return cacheSprite(key, c);
 }
 
 // Color palettes: highlight, body, shadow, outline (4-tone shading)
@@ -514,8 +519,10 @@ function createEnemyFish(type, frame, facingLeft, colorIdx, patternIdx) {
   const pal = FISH_PALETTES[colorIdx % FISH_PALETTES.length];
   const shape = FISH_SHAPES[patternIdx % FISH_SHAPES.length];
   const ps = 2;
-  const key = `enemy_${type}_${colorIdx}_${patternIdx}_${frame % 8}_${facingLeft}`;
-  if (spriteCache[key]) return { canvas: spriteCache[key], w: sizeDef.w * ps, h: sizeDef.h * ps };
+  const af = frame % ENEMY_ANIM_FRAMES;
+  const key = `enemy_${type}_${colorIdx}_${patternIdx}_${af}_${facingLeft}`;
+  const cached = spriteCache.get(key);
+  if (cached) return { canvas: cached, w: sizeDef.w * ps, h: sizeDef.h * ps };
 
   const c = document.createElement('canvas');
   c.width = sizeDef.w * ps;
@@ -558,7 +565,7 @@ function createEnemyFish(type, frame, facingLeft, colorIdx, patternIdx) {
   }
 
   // Tail wag animation
-  const tailWag = Math.sin(frame * 0.5) * 1.5;
+  const tailWag = Math.sin(af * (TAU / ENEMY_ANIM_FRAMES)) * 1.5;
 
   // === PASS 1: Draw body fill with shading ===
   // Reserve ~20% width for tail fin
@@ -720,13 +727,13 @@ function createEnemyFish(type, frame, facingLeft, colorIdx, patternIdx) {
   // Small open mouth at the front
   if (bodyProfile(0.02) * hh >= 1) {
     drawPixel(cx, mouthEdge, hh, pal.out, ps);
-    if (frame % 16 < 8 && type >= 2) {
+    if (af < ENEMY_ANIM_FRAMES / 2 && type >= 2) {
       // Animated mouth open
       drawPixel(cx, mouthEdge, hh - 1, pal.out, ps);
     }
   }
 
-  spriteCache[key] = c;
+  cacheSprite(key, c);
   return { canvas: c, w: sizeDef.w * ps, h: sizeDef.h * ps };
 }
 
@@ -735,8 +742,10 @@ function createShark(frame, facingLeft) {
   const sw = 120;
   const sh = 48;
   const ps = 2;
-  const key = `shark_${frame % 12}_${facingLeft}`;
-  if (spriteCache[key]) return { canvas: spriteCache[key], w: sw * ps, h: sh * ps };
+  const af = frame % SHARK_ANIM_FRAMES;
+  const key = `shark_${af}_${facingLeft}`;
+  const cached = spriteCache.get(key);
+  if (cached) return { canvas: cached, w: sw * ps, h: sh * ps };
 
   const c = document.createElement('canvas');
   c.width = sw * ps;
@@ -793,7 +802,7 @@ function createShark(frame, facingLeft) {
 
   // Dorsal fin (triangular, menacing) - positioned at ~30% from head
   const finX = facingLeft ? Math.floor(sw * 0.30) : Math.floor(sw * 0.70);
-  const finWag = Math.sin(frame * 0.2) * 0.5;
+  const finWag = Math.sin(af * (TAU / SHARK_ANIM_FRAMES)) * 0.5;
   for (let i = 0; i < 12; i++) {
     for (let j = 0; j < 12 - i; j++) {
       const fx = finX - 3 + j;
@@ -813,7 +822,7 @@ function createShark(frame, facingLeft) {
   }
 
   // === TAIL FIN - Large, prominent forked caudal fin ===
-  const tailWag = Math.sin(frame * 0.4) * 3;
+  const tailWag = Math.sin(af * (TAU / SHARK_ANIM_FRAMES)) * 3;
   const tailStart = facingLeft ? Math.floor(sw * 0.63) : Math.floor(sw * 0.37);
   const td = facingLeft ? 1 : -1;
 
@@ -889,8 +898,8 @@ function createShark(frame, facingLeft) {
   // Teeth - longer row for bigger mouth
   const mouthY = hh + 3;
   const mouthStart = facingLeft ? 4 : sw - 22;
+  const toothFrame = (af % 4 < 2) ? 0 : 1;
   for (let i = 0; i < 9; i++) {
-    const toothFrame = (frame % 4 < 2) ? 0 : 1;
     drawPixel(cx, mouthStart + i * 2, mouthY + toothFrame, '#FFFFFF', ps);
     drawPixel(cx, mouthStart + i * 2, mouthY + 1 + toothFrame, '#FFFFFF', ps);
     drawPixel(cx, mouthStart + i * 2, mouthY + 2, '#FF3333', ps);
@@ -909,7 +918,7 @@ function createShark(frame, facingLeft) {
   drawPixel(cx, noseX, hh - 1, '#7A8AAA', ps);
   drawPixel(cx, noseX, hh, '#7A8AAA', ps);
 
-  spriteCache[key] = c;
+  cacheSprite(key, c);
   return { canvas: c, w: sw * ps, h: sh * ps };
 }
 
@@ -997,7 +1006,8 @@ function updateParticles() {
 }
 
 function drawParticles() {
-  particles.forEach(p => {
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
     ctx.globalAlpha = p.alpha;
     if (p.type === 'bubble') {
       ctx.strokeStyle = '#AADDFF';
@@ -1023,7 +1033,7 @@ function drawParticles() {
       ctx.fillText(p.text, p.x, p.y);
     }
     ctx.globalAlpha = 1;
-  });
+  }
 }
 
 // ============================================================
@@ -1188,19 +1198,22 @@ function drawCaustics() {
   const depth = Math.min(1, (level - 1) / 5);
   ctx.globalAlpha = 0.04 * (1 - depth * 0.7);
   ctx.fillStyle = lerpColor('#66ccff', '#1a2a44', depth);
-  causticOffset += 0.3;
+  causticOffset = (causticOffset + 0.3) % (TAU / 0.01);
+  // All the quads share one colour, so batch them into a single path and fill once.
+  ctx.beginPath();
   for (let y = 0; y < GH - 60; y += 40) {
+    const rowOffset = Math.sin((y + causticOffset) * 0.05) * 15; // constant across the row
     for (let x = 0; x < GW; x += 40) {
-      const wx = x + Math.sin((y + causticOffset) * 0.05) * 15;
+      const wx = x + rowOffset;
       const wy = y + Math.cos((x + causticOffset) * 0.04) * 10;
-      ctx.beginPath();
       ctx.moveTo(wx, wy);
       ctx.lineTo(wx + 20, wy + 5);
       ctx.lineTo(wx + 15, wy + 20);
       ctx.lineTo(wx - 5, wy + 15);
-      ctx.fill();
+      ctx.closePath();
     }
   }
+  ctx.fill();
   ctx.globalAlpha = 1;
 }
 
@@ -1524,7 +1537,7 @@ function spawnEnemy() {
     width: def.w,
     height: def.h,
     facingLeft: !fromLeft,
-    frame: Math.random() * 100,
+    frame: Math.floor(Math.random() * 100),
     wobble: Math.random() * Math.PI * 2,
     points: def.points,
     sizeLevel: def.sizeLevel,
@@ -2793,6 +2806,8 @@ function activateShark() {
 // ============================================================
 //  RENDERING
 // ============================================================
+let sizeMeterGrad = null;
+
 function drawHUD() {
   // Score
   ctx.fillStyle = '#FFFFFF';
@@ -2838,10 +2853,12 @@ function drawHUD() {
   const currThresh = SIZE_THRESHOLDS[player.sizeLevel];
   const progress = player.sizeLevel >= 5 ? 1 :
     (player.eatCount - currThresh) / (nextThresh - currThresh);
-  const grad = ctx.createLinearGradient(meterX, 0, meterX + meterW, 0);
-  grad.addColorStop(0, '#44FF44');
-  grad.addColorStop(1, '#FFDD00');
-  ctx.fillStyle = grad;
+  if (!sizeMeterGrad) {
+    sizeMeterGrad = ctx.createLinearGradient(meterX, 0, meterX + meterW, 0);
+    sizeMeterGrad.addColorStop(0, '#44FF44');
+    sizeMeterGrad.addColorStop(1, '#FFDD00');
+  }
+  ctx.fillStyle = sizeMeterGrad;
   ctx.fillRect(meterX, meterY, meterW * Math.min(1, progress), meterH);
   ctx.strokeStyle = '#4a6a9a';
   ctx.lineWidth = 1;
@@ -2855,9 +2872,7 @@ function drawHUD() {
   ctx.textAlign = 'right';
   ctx.fillStyle = '#FF6666';
   ctx.font = 'bold 16px monospace';
-  let livesStr = '';
-  for (let i = 0; i < lives; i++) livesStr += '\u2665 ';
-  ctx.fillText(livesStr, GW - 12, 24);
+  ctx.fillText('\u2665 '.repeat(lives), GW - 12, 24);
 
   // Dart cooldown indicator
   const dartReady = player.dartCooldown <= 0;
@@ -2962,7 +2977,8 @@ function drawPlayer() {
 }
 
 function drawEnemies() {
-  enemies.forEach(e => {
+  for (let i = 0; i < enemies.length; i++) {
+    const e = enemies[i];
     const spriteData = createEnemyFish(e.type, e.frame, e.facingLeft, e.colorIdx, e.patternIdx);
     ctx.drawImage(spriteData.canvas,
       e.x - e.width / 2,
@@ -2973,7 +2989,7 @@ function drawEnemies() {
     if (e.frozenTimer > 0) {
       drawFrozenEffect(e.x, e.y, e.width, e.height);
     }
-  });
+  }
 }
 
 function drawShark() {
@@ -3011,21 +3027,23 @@ function drawShark() {
 }
 
 function drawAmbientBubbles() {
-  ambientBubbles.forEach(b => {
+  ctx.globalAlpha = 0.2;
+  ctx.strokeStyle = '#88BBDD';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < ambientBubbles.length; i++) {
+    const b = ambientBubbles[i];
     b.y -= b.speed;
     b.x += Math.sin(b.wobble + frameCount * 0.02) * 0.3;
     if (b.y < -10) {
       b.y = GH + 10;
       b.x = Math.random() * GW;
     }
-    ctx.globalAlpha = 0.2;
-    ctx.strokeStyle = '#88BBDD';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  });
+    ctx.moveTo(b.x + b.size, b.y); // avoid joining the previous circle
+    ctx.arc(b.x, b.y, b.size, 0, TAU);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
 }
 
 function drawFlash() {
@@ -3473,24 +3491,37 @@ function render() {
 
 // Fixed timestep: update at 36fps while rendering every frame
 const TARGET_UPDATE_MS = 1000 / 36; // ~28ms per update tick
+const MAX_UPDATES_PER_FRAME = 5;    // cap catch-up so a throttled raf can't run the game in slow motion
 let lastTime = 0;
 let accumulator = 0;
 
 function gameLoop(timestamp) {
   if (!lastTime) lastTime = timestamp;
-  const delta = Math.min(timestamp - lastTime, 250);
+  accumulator += timestamp - lastTime;
   lastTime = timestamp;
-  accumulator += delta;
 
-  // Only update game logic at 36fps rate
-  while (accumulator >= TARGET_UPDATE_MS) {
+  let updates = 0;
+  while (accumulator >= TARGET_UPDATE_MS && updates < MAX_UPDATES_PER_FRAME) {
     update();
     accumulator -= TARGET_UPDATE_MS;
+    updates++;
+  }
+  // Drop any remaining backlog — better to skip game time than run in slow-mo or spiral.
+  if (accumulator > TARGET_UPDATE_MS * MAX_UPDATES_PER_FRAME) {
+    accumulator = 0;
   }
 
   render();
   requestAnimationFrame(gameLoop);
 }
+
+// Reset timing when returning to a backgrounded tab so we don't try to catch up over a multi-second gap.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    lastTime = 0;
+    accumulator = 0;
+  }
+});
 
 // Initialize
 createBackground();
