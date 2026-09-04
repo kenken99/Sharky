@@ -1,0 +1,17 @@
+{
+  "name": "sharky-sharkster",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sharky Sharkster - a Shark Shark tribute. The game itself is dependency-free; devDependencies are for the Playwright test suite only.",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report",
+    "serve": "node tests/static-server.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
