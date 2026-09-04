@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Running the game
 
-There is no build system, no dependencies, and no test suite. The entire game is a single self-contained file: `sharky_sharkster.html`.
+There is no build system, no dependencies, and no test suite. The entire game is a single self-contained file: `index.html`.
 
-- Run locally: open `sharky_sharkster.html` directly in a browser (e.g. `open sharky_sharkster.html` on macOS).
+- Run locally: open `index.html` directly in a browser (e.g. `open index.html` on macOS).
 - A static server is only needed if a browser blocks `file://` for some API; none is required today.
 - Audio requires a user gesture — `initAudio()` is wired to the first key/click via `audioStarted` in the input handler.
 
 ## Architecture
 
-Everything lives inside `<script>` in `sharky_sharkster.html`. The file is organized into clearly-marked banner-comment sections that you should preserve when editing. Top-to-bottom, the major systems are:
+Everything lives inside `<script>` in `index.html`. The file is organized into clearly-marked banner-comment sections that you should preserve when editing. Top-to-bottom, the major systems are:
 
 1. **Canvas setup** — fixed 640x480 logical resolution (`GW`/`GH`); `resizeCanvas()` scales the canvas via CSS while keeping pixel-art crisp (`image-rendering: pixelated`).
 2. **Audio engine** — Web Audio API only. `masterGain → musicGain / sfxGain`. `playNote()` for one-shot SFX, `playNoteAt()` for scheduled notes, `playMusicLoop()` schedules melody+bass measures into the future and re-schedules on a timer. `startMusic('happy'|'tense'|...)` swaps tracks; `stopMusic()` cancels scheduled nodes.
