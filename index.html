@@ -367,10 +367,43 @@ const TAU = Math.PI * 2;
 const PLAYER_ANIM_FRAMES = 24;
 const ENEMY_ANIM_FRAMES = 8;
 const SHARK_ANIM_FRAMES = 16;
+const EEL_ANIM_FRAMES = 8;
+const STAR_ANIM_FRAMES = 24;
 
 function drawPixel(cx, x, y, color, size = 1) {
   cx.fillStyle = color;
   cx.fillRect(x * size, y * size, size, size);
+}
+
+// Deterministic per-pixel noise for mottling and ossicle bumps. Sprites are cached,
+// so they must never use Math.random() — the same key has to draw the same pixels.
+function spriteHash(x, y, seed) {
+  let n = (x * 374761393 + y * 668265263 + (seed || 0) * 1442695041) | 0;
+  n = (n ^ (n >> 13)) | 0;
+  n = (n * 1274126177) | 0;
+  return ((n ^ (n >> 16)) >>> 0) / 4294967296;
+}
+
+// Shared fish eye: dark rim, amber iris, black pupil on the leading side, one glint.
+// eyeI/eyeY are in nose-to-tail index space; sx() applies the facing mirror.
+function drawFishEye(cx, ps, W, H, sx, eyeI, eyeY, rim, iris) {
+  const n = W >= 40 ? 5 : (W >= 24 ? 4 : 2);
+  const o = Math.floor(n / 2);
+  for (let ox = 0; ox < n; ox++) {
+    for (let oy = 0; oy < n; oy++) {
+      const gy = eyeY - o + oy;
+      if (gy < 0 || gy >= H) continue;
+      let col;
+      if (n === 2) col = (ox === 1 && oy === 0) ? iris : '#0B0A10';
+      else if (ox === 0 || oy === 0 || ox === n - 1 || oy === n - 1) col = rim;
+      else col = (ox <= o) ? '#0B0A10' : iris;
+      drawPixel(cx, sx(eyeI - o + ox), gy, col, ps);
+    }
+  }
+  if (n >= 4) {
+    const gl = eyeY - o + 1;
+    if (gl >= 0 && gl < H) drawPixel(cx, sx(eyeI - o + n - 2), gl, '#FFFFFF', ps);
+  }
 }
 
 // Player fish sprites at different sizes
@@ -383,124 +416,217 @@ const PLAYER_SIZES = [
   { w: 48, h: 28 },
 ];
 
-// Colors based on size
-const PLAYER_BODY_COLORS = [
-  ['#FFD700', '#FFA500', '#FF8C00'], // gold/orange tiny
-  ['#FFD700', '#FFA500', '#FF6347'], // gold/orange/red
-  ['#FF6347', '#FF4500', '#CD3700'], // red/orange
-  ['#FF4500', '#FF2200', '#CC1100'], // deeper red
-  ['#E02020', '#CC0000', '#990000'], // bold red
-  ['#FF1493', '#FF0066', '#CC0044'], // hot pink champion
+// Five tones plus an outline per size level: highlight, light, mid, dark, outline,
+// with a belly pair. Nothing in a sprite samples a colour outside its own ramp.
+const PLAYER_PALETTES = [
+  { hi: '#FFF6D2', lt: '#FFD84D', md: '#EFA31F', dk: '#B96C0E', out: '#5F3105', belly: '#FFF3DA', bshad: '#EAD3A0' }, // gold tiny
+  { hi: '#FFEDC0', lt: '#FFC13C', md: '#EE8720', dk: '#B4550E', out: '#582509', belly: '#FFEDD2', bshad: '#E7C79A' }, // amber
+  { hi: '#FFDCB6', lt: '#FF9A4A', md: '#EF6122', dk: '#B03810', out: '#521808', belly: '#FFE5CB', bshad: '#E8BC95' }, // orange
+  { hi: '#FFCBB6', lt: '#FF7454', md: '#E63D1E', dk: '#A72310', out: '#4D0F08', belly: '#FFDACA', bshad: '#E7AF98' }, // vermilion
+  { hi: '#FFBBB8', lt: '#F2544F', md: '#C42220', dk: '#8B1014', out: '#420409', belly: '#FFD0CC', bshad: '#E4A29E' }, // crimson
+  { hi: '#FFC0E4', lt: '#FF5CA8', md: '#D92176', dk: '#98114F', out: '#450627', belly: '#FFD6EC', bshad: '#E9A3C4' }, // hot pink champion
 ];
+const FISH_IRIS = '#D8981F';
+
+// Body profile: blunt snout, deepest at 34% of body length, long taper into a
+// narrow caudal peduncle. Returns the half-height as a fraction of hh.
+function playerProfile(t) {
+  if (t < 0.12) return Math.pow(t / 0.12, 0.60) * 0.60;
+  if (t < 0.36) return 0.60 + ((t - 0.12) / 0.24) * 0.40;
+  return 1.0 - Math.pow((t - 0.36) / 0.64, 0.92) * 0.84;
+}
 
 function createPlayerFish(sizeLevel, frame, facingLeft) {
   const s = PLAYER_SIZES[sizeLevel] || PLAYER_SIZES[0];
   const ps = 2;
-  const cw = s.w * ps;
-  const ch = s.h * ps;
   const af = frame % PLAYER_ANIM_FRAMES; // bounded animation frame => bounded cache
   const key = `player_${sizeLevel}_${af}_${facingLeft}`;
   const cached = spriteCache.get(key);
   if (cached) return cached;
 
   const c = document.createElement('canvas');
-  c.width = cw;
-  c.height = ch;
+  c.width = s.w * ps;
+  c.height = s.h * ps;
   const cx = c.getContext('2d');
   cx.imageSmoothingEnabled = false;
 
-  const [bodyLight, bodyMid, bodyDark] = PLAYER_BODY_COLORS[sizeLevel] || PLAYER_BODY_COLORS[0];
-  const bellyColor = '#FFF8DC';
-  const eyeWhite = '#FFFFFF';
-  const eyePupil = '#111111';
-  const finColor = bodyDark;
-  const tailColor = bodyMid;
+  const W = s.w, H = s.h, hh = Math.floor(H / 2);
+  const P = PLAYER_PALETTES[sizeLevel] || PLAYER_PALETTES[0];
+  const big = W >= 26;
+  const bodyEnd = Math.floor(W * 0.76); // the rest of the width is caudal fin
 
-  const hw = Math.floor(s.w / 2);
-  const hh = Math.floor(s.h / 2);
+  // Travelling wave down the centreline — amplitude grows toward the tail, so the
+  // fish swims rather than shakes. Two beats per cycle, closing exactly on the loop.
+  const phase = af * (TAU / PLAYER_ANIM_FRAMES) * 2;
+  const amp = Math.max(1, H * 0.075);
+  const bend = (t) => Math.sin(phase - t * 2.6) * amp * Math.pow(t, 1.5);
+  const sx = (i) => (facingLeft ? i : W - 1 - i); // nose-to-tail index -> screen x
+  const cyAt = (t) => hh + bend(t);
 
-  // Draw fish body (elliptical)
-  for (let y = 0; y < s.h; y++) {
-    for (let x = 0; x < s.w; x++) {
-      const nx = (x - hw) / hw;
-      const ny = (y - hh) / hh;
-      const dist = nx * nx + ny * ny;
-      // Body shape (oval, wider in front)
-      const bodyWidth = 1.0 - Math.abs(nx) * 0.15;
-      if (dist < bodyWidth) {
-        let color;
-        if (ny > 0.2) color = bellyColor;
-        else if (ny > -0.2) color = bodyLight;
-        else color = bodyMid;
-        // Darker outline
-        if (dist > bodyWidth - 0.2) color = bodyDark;
-        drawPixel(cx, x, y, color, ps);
+  // === PASS 1: body, countershaded along the body normal ===
+  for (let i = 0; i < bodyEnd; i++) {
+    const t = i / bodyEnd;
+    const halfI = Math.floor(playerProfile(t) * hh);
+    if (halfI < 1) continue;
+    const cy = cyAt(t);
+    const X = sx(i);
+    const specDy = -Math.round(halfI * 0.50); // one-pixel specular ridge
+    for (let dy = -halfI; dy <= halfI; dy++) {
+      const y = Math.round(cy + dy);
+      if (y < 0 || y >= H) continue;
+      const ny = dy / halfI; // -1 dorsal, +1 ventral
+      let col;
+      if (dy === -halfI || dy === halfI || t < 0.035) col = P.out;
+      else if (ny < -0.55) col = P.dk;
+      else if (ny < -0.08) col = P.md;
+      else if (ny < 0.30) col = P.lt;
+      else if (ny < 0.66) col = P.belly;
+      else col = P.bshad;
+      if (col !== P.out && halfI > 2 && dy === specDy && t > 0.14 && t < 0.58) col = P.hi;
+      drawPixel(cx, X, y, col, ps);
+    }
+    // Lateral line: dashed, just below the midline
+    if (t > 0.28 && t < 0.95 && i % 2 === 0 && halfI > 2) {
+      const ly = Math.round(cy + Math.max(1, Math.round(halfI * 0.10)));
+      if (ly > 0 && ly < H) drawPixel(cx, X, ly, P.dk, ps);
+    }
+  }
+
+  // === PASS 2: gill cover ===
+  if (big) {
+    const gt = 0.24;
+    const gHalf = Math.floor(playerProfile(gt) * hh);
+    const gcy = cyAt(gt);
+    for (let gd = -Math.floor(gHalf * 0.72); gd <= Math.floor(gHalf * 0.18); gd++) {
+      const gn = gd / Math.max(1, gHalf);
+      const gy = Math.round(gcy + gd);
+      if (gy > 0 && gy < H) {
+        drawPixel(cx, sx(Math.round(gt * bodyEnd + gn * gn * 3.0)), gy, P.dk, ps);
       }
     }
   }
 
-  // Tail
-  const tailX = facingLeft ? s.w - 3 : 1;
-  const tailDir = facingLeft ? 1 : -1;
-  const tailWag = Math.sin(af * (TAU / PLAYER_ANIM_FRAMES) * 2) * 1.5; // 2 wags per cycle
-  for (let i = 0; i < 4; i++) {
-    drawPixel(cx, tailX + tailDir * i, hh - 2 + tailWag - i, tailColor, ps);
-    drawPixel(cx, tailX + tailDir * i, hh + 2 + tailWag + i, tailColor, ps);
-    drawPixel(cx, tailX + tailDir * i, hh + tailWag, finColor, ps);
+  // === PASS 3: dorsal fin, with ray striations ===
+  const d0 = 0.32, d1 = 0.62;
+  const dMax = Math.max(2, Math.round(H * 0.30));
+  for (let t2 = d0; t2 < d1; t2 += 1 / bodyEnd) {
+    const u = (t2 - d0) / (d1 - d0);
+    const fh = Math.round(dMax * Math.sin(Math.pow(u, 0.72) * Math.PI));
+    if (fh < 1) continue;
+    const bi = Math.round(t2 * bodyEnd);
+    const bY = Math.round(cyAt(t2) - playerProfile(t2) * hh);
+    for (let k = 0; k < fh; k++) {
+      const yy = bY - k;
+      if (yy < 0) continue;
+      drawPixel(cx, sx(bi), yy, k === fh - 1 ? P.out : (bi % 2 === 0 ? P.md : P.dk), ps);
+    }
   }
 
-  // Dorsal fin
-  const finWag = Math.sin(af * (TAU / PLAYER_ANIM_FRAMES)) * 0.5;
-  for (let i = 0; i < 3; i++) {
-    drawPixel(cx, hw - 1 + i, 1 + finWag, finColor, ps);
-    if (i < 2) drawPixel(cx, hw + i, 0 + finWag, finColor, ps);
+  // === PASS 4: anal fin ===
+  if (big) {
+    const a0 = 0.60, a1 = 0.78;
+    const aMax = Math.max(2, Math.round(H * 0.16));
+    for (let t3 = a0; t3 < a1; t3 += 1 / bodyEnd) {
+      const u3 = (t3 - a0) / (a1 - a0);
+      const ah = Math.round(aMax * Math.sin(Math.pow(u3, 0.7) * Math.PI));
+      const ai = Math.round(t3 * bodyEnd);
+      const aY = Math.round(cyAt(t3) + playerProfile(t3) * hh);
+      for (let k3 = 0; k3 < ah; k3++) {
+        const ay = aY + k3;
+        if (ay >= H) continue;
+        drawPixel(cx, sx(ai), ay, k3 === ah - 1 ? P.out : (ai % 2 === 0 ? P.md : P.dk), ps);
+      }
+    }
   }
 
-  // Eye
-  const eyeX = facingLeft ? Math.floor(s.w * 0.2) : Math.floor(s.w * 0.7);
-  const eyeY = hh - 1;
-  drawPixel(cx, eyeX, eyeY, eyeWhite, ps);
-  drawPixel(cx, eyeX + 1, eyeY, eyeWhite, ps);
-  drawPixel(cx, eyeX, eyeY + 1, eyeWhite, ps);
-  drawPixel(cx, eyeX + 1, eyeY + 1, eyeWhite, ps);
-  const pupilOff = facingLeft ? 0 : 1;
-  drawPixel(cx, eyeX + pupilOff, eyeY, eyePupil, ps);
-  drawPixel(cx, eyeX + pupilOff, eyeY + 1, eyePupil, ps);
-
-  // Mouth
-  const mouthX = facingLeft ? 1 : s.w - 3;
-  const mouthOpen = af < PLAYER_ANIM_FRAMES / 2;
-  if (mouthOpen) {
-    drawPixel(cx, mouthX, hh, '#CC0000', ps);
-    drawPixel(cx, mouthX + (facingLeft ? 1 : -1), hh, '#CC0000', ps);
+  // === PASS 5: pectoral fin, hinged at the gill cover and swept back ===
+  const pt = 0.30;
+  const pLen = Math.max(3, Math.round(W * 0.17));
+  const pBaseI = Math.round(pt * bodyEnd);
+  const pBaseY = Math.round(cyAt(pt) + playerProfile(pt) * hh * 0.42);
+  const pFlap = Math.sin(phase * 0.5) * 0.6;
+  for (let pk = 0; pk < pLen; pk++) {
+    const pu = pk / pLen;
+    const pI = pBaseI + pk;
+    const pY = Math.round(pBaseY + pk * (0.62 + pFlap * 0.12));
+    const thick = Math.max(1, Math.round((1 - pu) * 3));
+    for (let q = 0; q < thick; q++) {
+      const yv = pY - q;
+      if (yv < 0 || yv >= H) continue;
+      drawPixel(cx, sx(pI), yv, (q === thick - 1 && pk > 0) ? P.lt : (pk % 2 === 0 ? P.md : P.dk), ps);
+    }
+    if (pY + 1 < H) drawPixel(cx, sx(pI), pY + 1, P.out, ps);
   }
 
-  // Cute blush marks
-  const blushX = facingLeft ? Math.floor(s.w * 0.25) : Math.floor(s.w * 0.65);
-  drawPixel(cx, blushX, hh + 1, '#FF8888', ps);
-  drawPixel(cx, blushX + 1, hh + 1, '#FF8888', ps);
+  // === PASS 6: caudal fin — forked, notched, ray-striated ===
+  const tailLen = W - bodyEnd;
+  const tcy = cyAt(1.0);
+  const pedHalf = Math.max(1, Math.floor(playerProfile(1.0) * hh));
+  const maxSpread = Math.max(2, Math.round(hh * 0.96));
+  const minLen = Math.max(1, tailLen * 0.42);
+  for (let ti = 0; ti < tailLen; ti++) {
+    const tu = (ti + 1) / tailLen;
+    const spread = Math.round(pedHalf + (maxSpread - pedHalf) * Math.pow(tu, 0.70));
+    const TX = sx(bodyEnd + ti);
+    for (let td = -spread; td <= spread; td++) {
+      // Fin length grows toward the lobe tips, which cuts the fork notch
+      const v = Math.abs(td) / Math.max(1, maxSpread);
+      const L = minLen + (tailLen - minLen) * Math.pow(v, 0.80);
+      if (ti + 1 > L) continue;
+      const ty = Math.round(tcy + td);
+      if (ty < 0 || ty >= H) continue;
+      const ray = Math.round(Math.abs(td) * 0.75);
+      const edge = Math.abs(td) === spread || ti + 1 > L - 1;
+      drawPixel(cx, TX, ty, edge ? P.out : (ray % 2 === 0 ? P.md : P.dk), ps);
+    }
+  }
+
+  // === PASS 7: eye ===
+  const et = 0.165;
+  const eI = Math.round(et * bodyEnd);
+  const eY = Math.round(cyAt(et) - playerProfile(et) * hh * 0.30);
+  drawFishEye(cx, ps, W, H, sx, eI, eY, P.out, FISH_IRIS);
+
+  // === PASS 8: jaw notch, open on the first half of the cycle ===
+  const open = af < PLAYER_ANIM_FRAMES / 2 ? 1 : 0;
+  const jawY = Math.round(cyAt(0.045) + playerProfile(0.045) * hh * 0.34);
+  for (let mi = 0; mi < (big ? 3 : 2); mi++) {
+    const my = jawY + (mi === 0 ? open : 0);
+    if (my > 0 && my < H) drawPixel(cx, sx(1 + mi), my, P.out, ps);
+  }
+  if (open && big) {
+    drawPixel(cx, sx(1), jawY + 1, '#6E1A16', ps);
+    drawPixel(cx, sx(2), jawY + 1, '#6E1A16', ps);
+  }
 
   return cacheSprite(key, c);
 }
 
 // Color palettes: highlight, body, shadow, outline (4-tone shading)
+// Colour palettes: five tones plus an outline, with a belly pair. `md` is the
+// fish's identifying hue (used for eat particles); `hi` is the specular ridge only.
 const FISH_PALETTES = [
-  { hi: '#AAFFAA', body: '#44CC44', shad: '#228822', out: '#115511', belly: '#DDFFD8' }, // green
-  { hi: '#AAD4FF', body: '#4488DD', shad: '#2255AA', out: '#113366', belly: '#D0E8FF' }, // blue
-  { hi: '#FFAACC', body: '#EE5588', shad: '#BB2255', out: '#771133', belly: '#FFD8E8' }, // pink
-  { hi: '#FFEEAA', body: '#EECC33', shad: '#BB9900', out: '#776600', belly: '#FFF8D0' }, // yellow
-  { hi: '#AAFFEE', body: '#33CCAA', shad: '#1A9977', out: '#0A6644', belly: '#D0FFF0' }, // teal
-  { hi: '#FFCCAA', body: '#EE8833', shad: '#CC5500', out: '#883300', belly: '#FFE8D0' }, // orange
-  { hi: '#DDBBFF', body: '#9955DD', shad: '#6633AA', out: '#441177', belly: '#F0E0FF' }, // purple
-  { hi: '#FFBBBB', body: '#DD4444', shad: '#AA2222', out: '#661111', belly: '#FFD8D8' }, // red
-  { hi: '#BBFFFF', body: '#44BBCC', shad: '#228899', out: '#115566', belly: '#D8FFFF' }, // cyan
-  { hi: '#FFD4AA', body: '#DD8855', shad: '#AA5533', out: '#773311', belly: '#FFEEDD' }, // brown
-  { hi: '#EECCFF', body: '#CC77DD', shad: '#9944AA', out: '#662277', belly: '#F8E8FF' }, // magenta
-  { hi: '#CCFFCC', body: '#77BB55', shad: '#448833', out: '#225511', belly: '#E8FFE0' }, // olive
+  { hi: '#D6F5C2', lt: '#79D45C', md: '#3FA13A', dk: '#226B27', out: '#0E3315', belly: '#EAF7D8', bshad: '#B8D6A1' }, // green
+  { hi: '#C6E4FF', lt: '#5CA6E8', md: '#2F6FBF', dk: '#1B4382', out: '#0B1F44', belly: '#E2F0FF', bshad: '#AEC7E3' }, // blue
+  { hi: '#FFD2E2', lt: '#F2749F', md: '#C93D70', dk: '#8C2149', out: '#440E24', belly: '#FFE6EF', bshad: '#E2B4C6' }, // pink
+  { hi: '#FFF3C4', lt: '#F2D050', md: '#C39A18', dk: '#856608', out: '#3C2C04', belly: '#FFF7DC', bshad: '#E0CE9A' }, // yellow
+  { hi: '#C4F6E6', lt: '#4CCBAB', md: '#219079', dk: '#0F5F4E', out: '#062E26', belly: '#DDFAF1', bshad: '#A8D6C9' }, // teal
+  { hi: '#FFDCBC', lt: '#F2953F', md: '#C45F14', dk: '#8A3A08', out: '#3E1904', belly: '#FFEBD6', bshad: '#E3C09A' }, // orange
+  { hi: '#E2CDFF', lt: '#9E6FE0', md: '#6A3CB0', dk: '#452276', out: '#1F0E39', belly: '#EFE4FF', bshad: '#C3AEDF' }, // purple
+  { hi: '#FFC7C0', lt: '#E4574C', md: '#B02A24', dk: '#761413', out: '#360607', belly: '#FFDBD4', bshad: '#E1AAA2' }, // red
+  { hi: '#C2F2F7', lt: '#46BFD1', md: '#1D8698', dk: '#0D5765', out: '#052A33', belly: '#DDF6FA', bshad: '#A6D2DA' }, // cyan
+  { hi: '#EFD6BA', lt: '#C79463', md: '#95633A', dk: '#653F20', out: '#2E1A0C', belly: '#F6E7D3', bshad: '#D2BB9E' }, // brown
+  { hi: '#F7D4F2', lt: '#D274C8', md: '#A03E96', dk: '#6C2364', out: '#320F2E', belly: '#FBE6F8', bshad: '#DCB6D6' }, // magenta
+  { hi: '#DEF0BE', lt: '#9BC062', md: '#6B8D34', dk: '#455E1B', out: '#1E2C0A', belly: '#EDF6D9', bshad: '#C6D5A4' }, // olive
 ];
 
 // Fish body shapes for variety
 const FISH_SHAPES = ['normal', 'round', 'sleek', 'tall'];
+
+// Markings, chosen independently of the silhouette. patternIdx encodes both:
+// shape = patternIdx % FISH_SHAPES.length, pattern = (patternIdx / 4) | 0.
+const FISH_PATTERNS = ['plain', 'bars', 'stripe', 'spots', 'saddle'];
+const FISH_MORPH_COUNT = 20; // FISH_SHAPES.length * FISH_PATTERNS.length
 
 // Sprite size definitions per size level (pixel dimensions before ps multiply)
 const FISH_SIZE_DEFS = [
@@ -514,10 +640,13 @@ const FISH_SIZE_DEFS = [
 ];
 
 // Enemy fish with proper pixel art anatomy
+// Enemy fish. patternIdx carries two independent axes: silhouette and markings,
+// so FISH_SHAPES.length * FISH_PATTERNS.length distinct morphs come out of one factory.
 function createEnemyFish(type, frame, facingLeft, colorIdx, patternIdx) {
   const sizeDef = FISH_SIZE_DEFS[type] || FISH_SIZE_DEFS[0];
-  const pal = FISH_PALETTES[colorIdx % FISH_PALETTES.length];
+  const P = FISH_PALETTES[colorIdx % FISH_PALETTES.length];
   const shape = FISH_SHAPES[patternIdx % FISH_SHAPES.length];
+  const pattern = FISH_PATTERNS[Math.floor(patternIdx / FISH_SHAPES.length) % FISH_PATTERNS.length];
   const ps = 2;
   const af = frame % ENEMY_ANIM_FRAMES;
   const key = `enemy_${type}_${colorIdx}_${patternIdx}_${af}_${facingLeft}`;
@@ -530,207 +659,195 @@ function createEnemyFish(type, frame, facingLeft, colorIdx, patternIdx) {
   const cx = c.getContext('2d');
   cx.imageSmoothingEnabled = false;
 
-  const W = sizeDef.w;
-  const H = sizeDef.h;
-  const hh = Math.floor(H / 2);
+  const W = sizeDef.w, H = sizeDef.h, hh = Math.floor(H / 2);
 
-  // Body profile function: returns half-height at each x-position
-  // t goes from 0 (mouth) to 1 (tail end)
-  function bodyProfile(t) {
-    let h;
-    if (shape === 'round') {
-      // Rounder, pufferfish-like
-      h = Math.sin(t * Math.PI) * 0.95;
-      if (t < 0.15) h *= t / 0.15;
-    } else if (shape === 'sleek') {
-      // Elongated, tuna-like
-      const peak = 0.35;
-      if (t < peak) h = Math.sin((t / peak) * Math.PI * 0.5) * 0.7;
-      else h = Math.cos(((t - peak) / (1 - peak)) * Math.PI * 0.45) * 0.7;
-      if (t < 0.08) h *= t / 0.08;
-    } else if (shape === 'tall') {
-      // Taller, angelfish-like
-      const peak = 0.4;
-      if (t < peak) h = Math.sin((t / peak) * Math.PI * 0.5) * 1.0;
-      else h = Math.cos(((t - peak) / (1 - peak)) * Math.PI * 0.4) * 1.0;
-      if (t < 0.1) h *= t / 0.1;
-    } else {
-      // Normal teardrop fish
-      const peak = 0.38;
-      if (t < peak) h = Math.sin((t / peak) * Math.PI * 0.5) * 0.85;
-      else h = Math.cos(((t - peak) / (1 - peak)) * Math.PI * 0.42) * 0.85;
-      if (t < 0.1) h *= t / 0.1;
+  // Body profile: half-height as a fraction of hh, t from 0 (snout) to 1 (peduncle)
+  function profile(t) {
+    let h, p;
+    if (shape === 'round') {          // pufferfish-like
+      p = 0.42;
+      h = t < p ? Math.pow(t / p, 0.55) * 1.0 : 1.0 - Math.pow((t - p) / (1 - p), 1.05) * 0.82;
+    } else if (shape === 'sleek') {   // tuna-like
+      p = 0.30;
+      h = t < p ? Math.pow(t / p, 0.55) * 0.74 : 0.74 - Math.pow((t - p) / (1 - p), 0.95) * 0.60;
+    } else if (shape === 'tall') {    // angelfish-like
+      p = 0.42;
+      h = t < p ? Math.pow(t / p, 0.62) * 1.0 : 1.0 - Math.pow((t - p) / (1 - p), 0.80) * 0.86;
+    } else {                          // normal teardrop
+      p = 0.36;
+      h = t < p ? Math.pow(t / p, 0.58) * 0.90 : 0.90 - Math.pow((t - p) / (1 - p), 0.92) * 0.74;
     }
-    return Math.max(0, h);
+    if (t < 0.10) h *= 0.45 + 0.55 * (t / 0.10); // blunt the snout
+    return Math.max(0.05, h);
   }
 
-  // Tail wag animation
-  const tailWag = Math.sin(af * (TAU / ENEMY_ANIM_FRAMES)) * 1.5;
+  const bodyEnd = Math.floor(W * 0.76);
+  const phase = af * (TAU / ENEMY_ANIM_FRAMES);
+  const amp = Math.max(0.8, H * 0.07);
+  const bend = (t) => Math.sin(phase - t * 2.4) * amp * Math.pow(t, 1.5);
+  const sx = (i) => (facingLeft ? i : W - 1 - i);
+  const cyAt = (t) => hh + bend(t);
+  const big = type >= 2, mid = type >= 1;
 
-  // === PASS 1: Draw body fill with shading ===
-  // Reserve ~20% width for tail fin
-  const bodyEnd = Math.floor(W * 0.78);
-  const tailStart = bodyEnd;
+  // === PASS 1: body, countershading + markings ===
+  for (let i = 0; i < bodyEnd; i++) {
+    const t = i / bodyEnd;
+    const halfI = Math.floor(profile(t) * hh);
+    if (halfI < 1) continue;
+    const cy = cyAt(t);
+    const X = sx(i);
+    const specDy = -Math.round(halfI * 0.50);
+    for (let dy = -halfI; dy <= halfI; dy++) {
+      const y = Math.round(cy + dy);
+      if (y < 0 || y >= H) continue;
+      const ny = dy / halfI;
+      let col;
+      if (dy === -halfI || dy === halfI || t < 0.03) col = P.out;
+      else if (ny < -0.56) col = P.dk;
+      else if (ny < -0.06) col = P.md;
+      else if (ny < 0.32) col = P.lt;
+      else if (ny < 0.68) col = P.belly;
+      else col = P.bshad;
 
-  for (let px = 0; px < bodyEnd; px++) {
-    const t = facingLeft ? px / bodyEnd : 1 - px / bodyEnd;
-    const profile = bodyProfile(t);
-    const halfH = Math.floor(profile * hh);
-    if (halfH <= 0) continue;
-
-    for (let dy = -halfH; dy <= halfH; dy++) {
-      const py = hh + dy;
-      if (py < 0 || py >= H) continue;
-      const normalY = dy / halfH; // -1 top to 1 bottom
-      const edgeDist = Math.abs(dy) / halfH;
-
-      let color;
-      // 4-tone shading: outline -> shadow -> body -> highlight -> belly
-      if (edgeDist > 0.85) {
-        color = pal.out; // outline edge
-      } else if (normalY > 0.4) {
-        color = pal.belly; // white belly
-      } else if (normalY > 0.0) {
-        color = pal.shad; // lower body shadow
-      } else if (normalY > -0.5) {
-        color = pal.body; // main body color
-      } else {
-        color = pal.hi; // top highlight
-      }
-
-      // Outline at horizontal extremes too
-      if (t < 0.06 || t > 0.95) color = pal.out;
-
-      // Stripe pattern (every other fish shape has stripes)
-      if (shape === 'normal' || shape === 'tall') {
-        const stripeT = facingLeft ? px : (bodyEnd - 1 - px);
-        if (stripeT % 6 < 2 && edgeDist < 0.7 && Math.abs(normalY) < 0.6) {
-          color = pal.shad;
+      // Markings, applied inside the outline only
+      if (col !== P.out && Math.abs(ny) < 0.80) {
+        if (pattern === 'bars') {
+          const bt = Math.round(i + ny * ny * ny * 3.0 + ny * 1.6); // curves with the body
+          if (((bt % 7) + 7) % 7 < 2) col = ny < -0.1 ? P.dk : P.md;
+        } else if (pattern === 'stripe') {
+          if (ny > -0.30 && ny < 0.02) col = P.dk;
+          else if (ny >= 0.02 && ny < 0.14) col = P.hi;
+        } else if (pattern === 'spots') {
+          if (spriteHash(Math.floor(i / 3), Math.floor((dy + halfI) / 3), type + colorIdx) > 0.62) {
+            col = ny < 0.2 ? P.dk : P.md;
+          }
+        } else if (pattern === 'saddle') {
+          if (t > 0.26 && t < 0.52 && ny < 0.18) col = P.dk;
+          else if (t >= 0.52 && t < 0.60 && ny < -0.30) col = P.dk;
         }
       }
-
-      drawPixel(cx, px, py, color, ps);
+      if (col !== P.out && halfI > 2 && dy === specDy && t > 0.13 && t < 0.60) col = P.hi;
+      drawPixel(cx, X, y, col, ps);
+    }
+    // Lateral line
+    if (mid && t > 0.30 && t < 0.94 && i % 2 === 0 && halfI > 2) {
+      const ly = Math.round(cy + Math.max(1, Math.round(halfI * 0.08)));
+      if (ly > 0 && ly < H) drawPixel(cx, X, ly, P.dk, ps);
     }
   }
 
-  // === PASS 2: Outline the body top and bottom edges ===
-  for (let px = 0; px < bodyEnd; px++) {
-    const t = facingLeft ? px / bodyEnd : 1 - px / bodyEnd;
-    const profile = bodyProfile(t);
-    const halfH = Math.floor(profile * hh);
-    if (halfH <= 0) continue;
-    // Top outline
-    if (hh - halfH >= 0) drawPixel(cx, px, hh - halfH, pal.out, ps);
-    // Bottom outline
-    if (hh + halfH < H) drawPixel(cx, px, hh + halfH, pal.out, ps);
+  // === PASS 2: gill cover ===
+  if (mid) {
+    const gt = 0.23;
+    const gH = Math.floor(profile(gt) * hh);
+    const gcy = cyAt(gt);
+    for (let gd = -Math.floor(gH * 0.70); gd <= Math.floor(gH * 0.18); gd++) {
+      const gn = gd / Math.max(1, gH);
+      const gy = Math.round(gcy + gd);
+      if (gy > 0 && gy < H) drawPixel(cx, sx(Math.round(gt * bodyEnd + gn * gn * 2.6)), gy, P.dk, ps);
+    }
   }
 
-  // === PASS 3: Caudal (tail) fin - fan/V shape ===
-  const tailFanLen = W - tailStart;
-  const tailBaseY = hh + tailWag * 0.2;
-  for (let i = 0; i < tailFanLen; i++) {
-    const tx = facingLeft ? tailStart + i : (W - 1 - tailStart) - i;
-    if (tx < 0 || tx >= W) continue;
-    const progress = i / tailFanLen;
-    const spread = progress * (hh * 0.8);
-    // Upper lobe
-    for (let dy = -1; dy <= 1; dy++) {
-      const ty = Math.floor(tailBaseY - 1 - spread + dy);
-      if (ty >= 0 && ty < H) {
-        drawPixel(cx, tx, ty, dy === 0 ? pal.body : (progress > 0.7 ? pal.hi : pal.shad), ps);
-      }
+  // === PASS 3: dorsal fin ===
+  const d0 = shape === 'tall' ? 0.28 : 0.32;
+  const d1 = shape === 'sleek' ? 0.54 : 0.62;
+  const dMax = Math.max(2, Math.round(H * (shape === 'tall' ? 0.34 : 0.26)));
+  for (let t2 = d0; t2 < d1; t2 += 1 / bodyEnd) {
+    const u = (t2 - d0) / (d1 - d0);
+    const fh = Math.round(dMax * Math.sin(Math.pow(u, 0.7) * Math.PI));
+    if (fh < 1) continue;
+    const bi = Math.round(t2 * bodyEnd);
+    const bY = Math.round(cyAt(t2) - profile(t2) * hh);
+    for (let k = 0; k < fh; k++) {
+      const yy = bY - k;
+      if (yy < 0) continue;
+      drawPixel(cx, sx(bi), yy, k === fh - 1 ? P.out : (bi % 2 === 0 ? P.md : P.dk), ps);
     }
-    // Lower lobe
-    for (let dy = -1; dy <= 1; dy++) {
-      const ty = Math.floor(tailBaseY + 1 + spread + dy);
-      if (ty >= 0 && ty < H) {
-        drawPixel(cx, tx, ty, dy === 0 ? pal.body : (progress > 0.7 ? pal.hi : pal.shad), ps);
-      }
-    }
-    // Fill between lobes near the stalk
-    if (progress < 0.5) {
-      const topY = Math.ceil(tailBaseY - 1 - spread);
-      const botY = Math.floor(tailBaseY + 1 + spread);
-      for (let fy = topY; fy <= botY; fy++) {
-        if (fy >= 0 && fy < H) drawPixel(cx, tx, fy, pal.body, ps);
-      }
-    }
-    // Outline
-    const topEdge = Math.floor(tailBaseY - 1 - spread);
-    const botEdge = Math.floor(tailBaseY + 2 + spread);
-    if (topEdge >= 0) drawPixel(cx, tx, topEdge, pal.out, ps);
-    if (botEdge < H) drawPixel(cx, tx, botEdge, pal.out, ps);
   }
 
-  // === PASS 4: Dorsal fin (triangle on top, all sizes) ===
-  const dorsalX = facingLeft ? Math.floor(bodyEnd * 0.35) : Math.floor(W - bodyEnd * 0.35);
-  const dorsalH = Math.max(2, Math.floor(H * 0.22));
-  const dorsalW = Math.max(2, Math.floor(W * 0.18));
-  const dorsalT = facingLeft ? dorsalX / bodyEnd : 1 - dorsalX / bodyEnd;
-  const dorsalBaseY = hh - Math.floor(bodyProfile(dorsalT) * hh);
-  for (let i = 0; i < dorsalH; i++) {
-    const width = Math.max(1, Math.floor(dorsalW * (1 - i / dorsalH)));
-    for (let dx = 0; dx < width; dx++) {
-      const fx = dorsalX - Math.floor(width / 2) + dx;
-      const fy = dorsalBaseY - 1 - i;
-      if (fx >= 0 && fx < W && fy >= 0) {
-        drawPixel(cx, fx, fy, (dx === 0 || dx === width - 1 || i === dorsalH - 1) ? pal.out : pal.shad, ps);
+  // === PASS 4: anal + pelvic fins ===
+  if (big) {
+    const a0 = 0.58, a1 = 0.76;
+    const aMax = Math.max(2, Math.round(H * 0.15));
+    for (let t3 = a0; t3 < a1; t3 += 1 / bodyEnd) {
+      const u3 = (t3 - a0) / (a1 - a0);
+      const ah = Math.round(aMax * Math.sin(Math.pow(u3, 0.7) * Math.PI));
+      const ai = Math.round(t3 * bodyEnd);
+      const aY = Math.round(cyAt(t3) + profile(t3) * hh);
+      for (let k3 = 0; k3 < ah; k3++) {
+        const ay = aY + k3;
+        if (ay >= H) continue;
+        drawPixel(cx, sx(ai), ay, k3 === ah - 1 ? P.out : (ai % 2 === 0 ? P.md : P.dk), ps);
+      }
+    }
+    const v0 = 0.36, v1 = 0.46;
+    const vMax = Math.max(1, Math.round(H * 0.10));
+    for (let t4 = v0; t4 < v1; t4 += 1 / bodyEnd) {
+      const vh = Math.round(vMax * Math.sin(((t4 - v0) / (v1 - v0)) * Math.PI));
+      const vi = Math.round(t4 * bodyEnd);
+      const vY = Math.round(cyAt(t4) + profile(t4) * hh);
+      for (let k4 = 0; k4 < vh; k4++) {
+        const vy = vY + k4;
+        if (vy >= H) continue;
+        drawPixel(cx, sx(vi), vy, P.dk, ps);
       }
     }
   }
 
-  // === PASS 5: Pectoral fin (small paddle on side) ===
-  if (type >= 1) {
-    const pfinX = facingLeft ? Math.floor(bodyEnd * 0.45) : Math.floor(W - bodyEnd * 0.45);
-    const pfinT = facingLeft ? pfinX / bodyEnd : 1 - pfinX / bodyEnd;
-    const pfinBaseY = hh + Math.floor(bodyProfile(pfinT) * hh * 0.5);
-    const pfinLen = Math.max(2, Math.floor(W * 0.12));
-    const pfinDir = facingLeft ? 1 : -1;
-    for (let i = 0; i < pfinLen; i++) {
-      const pfx = pfinX + pfinDir * i;
-      if (pfx >= 0 && pfx < W) {
-        drawPixel(cx, pfx, pfinBaseY + i, pal.shad, ps);
-        if (i > 0) drawPixel(cx, pfx, pfinBaseY + i - 1, pal.body, ps);
-        drawPixel(cx, pfx, pfinBaseY + i + 1, pal.out, ps);
+  // === PASS 5: pectoral fin, hinged at the gill cover ===
+  if (mid) {
+    const pt = 0.29;
+    const pLen = Math.max(3, Math.round(W * 0.15));
+    const pBaseI = Math.round(pt * bodyEnd);
+    const pBaseY = Math.round(cyAt(pt) + profile(pt) * hh * 0.40);
+    for (let pk = 0; pk < pLen; pk++) {
+      const pu = pk / pLen;
+      const pI = pBaseI + pk;
+      const pY = Math.round(pBaseY + pk * 0.66);
+      const thick = Math.max(1, Math.round((1 - pu) * 3));
+      for (let q = 0; q < thick; q++) {
+        const yv = pY - q;
+        if (yv < 0 || yv >= H) continue;
+        drawPixel(cx, sx(pI), yv, (q === thick - 1 && pk > 0) ? P.lt : (pk % 2 === 0 ? P.md : P.dk), ps);
       }
+      if (pY + 1 < H) drawPixel(cx, sx(pI), pY + 1, P.out, ps);
     }
   }
 
-  // === PASS 6: Eye (large, expressive with white, pupil, highlight) ===
-  const eyeX = facingLeft ? Math.floor(bodyEnd * 0.18) : Math.floor(W - bodyEnd * 0.18);
-  const eyeY = hh - Math.max(1, Math.floor(H * 0.08));
-  const eyeR = type >= 3 ? 2 : (type >= 1 ? 1.5 : 1);
-  // White of eye
-  const eyePixels = eyeR >= 2 ? 2 : (eyeR >= 1.5 ? 2 : 1);
-  for (let ey = 0; ey < eyePixels; ey++) {
-    for (let ex = 0; ex < eyePixels; ex++) {
-      if (eyeX + ex >= 0 && eyeX + ex < W && eyeY + ey >= 0 && eyeY + ey < H) {
-        drawPixel(cx, eyeX + ex, eyeY + ey, '#FFFFFF', ps);
-      }
+  // === PASS 6: caudal fin — forked, notched, ray-striated ===
+  const tailLen = W - bodyEnd;
+  const tcy = cyAt(1.0);
+  const pedHalf = Math.max(1, Math.floor(profile(1.0) * hh));
+  const maxSpread = Math.max(2, Math.round(hh * (shape === 'sleek' ? 1.0 : 0.92)));
+  const minLen = Math.max(1, tailLen * 0.40);
+  for (let ti = 0; ti < tailLen; ti++) {
+    const tu = (ti + 1) / tailLen;
+    const spread = Math.round(pedHalf + (maxSpread - pedHalf) * Math.pow(tu, 0.68));
+    const TX = sx(bodyEnd + ti);
+    for (let td = -spread; td <= spread; td++) {
+      const v = Math.abs(td) / Math.max(1, maxSpread);
+      const L = minLen + (tailLen - minLen) * Math.pow(v, 0.78);
+      if (ti + 1 > L) continue;
+      const ty = Math.round(tcy + td);
+      if (ty < 0 || ty >= H) continue;
+      const ray = Math.round(Math.abs(td) * 0.75);
+      const edge = Math.abs(td) === spread || ti + 1 > L - 1;
+      drawPixel(cx, TX, ty, edge ? P.out : (ray % 2 === 0 ? P.md : P.dk), ps);
     }
-  }
-  // Dark pupil (front side of eye)
-  const pupilX = facingLeft ? eyeX : eyeX + eyePixels - 1;
-  if (pupilX >= 0 && pupilX < W) {
-    drawPixel(cx, pupilX, eyeY, '#111122', ps);
-    if (eyePixels > 1 && eyeY + 1 < H) drawPixel(cx, pupilX, eyeY + 1, '#222233', ps);
-  }
-  // Highlight sparkle (top-back of eye)
-  const hlX = facingLeft ? eyeX + eyePixels - 1 : eyeX;
-  if (hlX >= 0 && hlX < W && eyeY >= 0) {
-    drawPixel(cx, hlX, eyeY, '#FFFFFF', ps);
   }
 
-  // === PASS 7: Mouth ===
-  const mouthEdge = facingLeft ? 0 : W - 1;
-  const mouthT = facingLeft ? 0 : 1;
-  // Small open mouth at the front
-  if (bodyProfile(0.02) * hh >= 1) {
-    drawPixel(cx, mouthEdge, hh, pal.out, ps);
-    if (af < ENEMY_ANIM_FRAMES / 2 && type >= 2) {
-      // Animated mouth open
-      drawPixel(cx, mouthEdge, hh - 1, pal.out, ps);
-    }
+  // === PASS 7: eye ===
+  const et = 0.155;
+  const eI = Math.round(et * bodyEnd);
+  const eY = Math.round(cyAt(et) - profile(et) * hh * 0.28);
+  drawFishEye(cx, ps, W, H, sx, eI, eY, P.out, FISH_IRIS);
+
+  // === PASS 8: jaw notch ===
+  const jawY = Math.round(cyAt(0.04) + profile(0.04) * hh * 0.30);
+  const open = (af < ENEMY_ANIM_FRAMES / 2 && big) ? 1 : 0;
+  for (let mi = 0; mi < (big ? 3 : 2); mi++) {
+    const my = jawY + (mi === 0 ? open : 0);
+    if (my > 0 && my < H) drawPixel(cx, sx(1 + mi), my, P.out, ps);
   }
 
   cacheSprite(key, c);
@@ -738,12 +855,19 @@ function createEnemyFish(type, frame, facingLeft, colorIdx, patternIdx) {
 }
 
 // Shark sprite
-function createShark(frame, facingLeft) {
+// Shark. Heterocercal tail, full fin set, underslung jaw, five gill slits.
+const SHARK_PAL = {
+  hi: '#B9CBD6', lt: '#7D93A6', md: '#59708A', dk: '#3A4E68', out: '#151E2E',
+  belly: '#EDF2F5', bshad: '#C2CFD9', tooth: '#FFFFFF', gum: '#7E2430', iris: '#C8D6DF',
+};
+
+function createShark(frame, facingLeft, attacking) {
   const sw = 120;
   const sh = 48;
   const ps = 2;
   const af = frame % SHARK_ANIM_FRAMES;
-  const key = `shark_${af}_${facingLeft}`;
+  const atk = !!attacking;
+  const key = `shark_${af}_${facingLeft}_${atk}`;
   const cached = spriteCache.get(key);
   if (cached) return { canvas: cached, w: sw * ps, h: sh * ps };
 
@@ -753,173 +877,389 @@ function createShark(frame, facingLeft) {
   const cx = c.getContext('2d');
   cx.imageSmoothingEnabled = false;
 
-  const hh = Math.floor(sh / 2); // vertical center = 24
+  const W = sw, H = sh, hh = Math.floor(H / 2);
+  const S = SHARK_PAL;
+  const bodyEnd = Math.floor(W * 0.72); // the rest is caudal fin
 
-  // Body layout: head at front 0-25%, body 25-70%, tail 70-100%
-  // facingLeft: head at low x, tail at high x
-  // facingRight: head at high x, tail at low x
-  const headEnd = facingLeft ? Math.floor(sw * 0.28) : Math.floor(sw * 0.72);
-  const bodyEnd = facingLeft ? Math.floor(sw * 0.72) : Math.floor(sw * 0.28);
-  const bodyCenter = facingLeft ? Math.floor(sw * 0.40) : Math.floor(sw * 0.60);
+  // Sharks undulate the rear half and hold the head nearly still
+  const phase = af * (TAU / SHARK_ANIM_FRAMES);
+  const bend = (t) => Math.sin(phase - t * 2.2) * 3.0 * Math.pow(Math.max(0, (t - 0.18) / 0.82), 1.7);
+  const sx = (i) => (facingLeft ? i : W - 1 - i);
+  const cyAt = (t) => hh + bend(t);
 
-  // Draw shark body using a custom shape (not a simple ellipse)
-  for (let x = 0; x < sw; x++) {
-    // Calculate how wide the body is at each x-position
-    let bodyHalfHeight = 0;
-    let t; // 0 = nose tip, 1 = tail tip
+  // Conical snout, widest at the pectoral girdle, long taper to a keeled peduncle
+  function prof(t) {
+    if (t < 0.11) return Math.pow(t / 0.11, 0.52) * 0.58;
+    if (t < 0.32) return 0.58 + ((t - 0.11) / 0.21) * 0.42;
+    return 1.0 - Math.pow((t - 0.32) / 0.68, 0.85) * 0.88;
+  }
+  // Flat-ish back, deeper belly; the snout overhangs the mouth
+  const topH = (t) => prof(t) * 12.5 * (t < 0.16 ? 0.78 : 1.0);
+  const botH = (t) => prof(t) * 14.0 * (t < 0.16 ? 0.85 : 1.0);
+  // Real sharks have a ragged countershading boundary, not a straight cut
+  const shadeLine = (t) => 0.52 + Math.sin(t * 17.0 + 0.6) * 0.11 + Math.sin(t * 41.0) * 0.05;
 
-    if (facingLeft) {
-      t = x / sw; // 0=left(nose) to 1=right(tail)
-    } else {
-      t = 1 - x / sw; // reversed
-    }
-
-    // Shape profile: nose tapers to point, body widest at ~35%, tapers to nothing by ~68% (tail draws separately)
-    if (t < 0.05) {
-      bodyHalfHeight = t * 60; // sharp nose point
-    } else if (t < 0.35) {
-      bodyHalfHeight = 3 + (t - 0.05) / 0.30 * (hh * 0.75 - 3); // widen to max
-    } else if (t < 0.68) {
-      bodyHalfHeight = hh * 0.75 - (t - 0.35) / 0.33 * (hh * 0.75); // taper to zero by 68%
-    } else {
-      bodyHalfHeight = 0; // no body here - tail zone only
-    }
-
-    bodyHalfHeight = Math.max(0, Math.floor(bodyHalfHeight));
-
-    for (let dy = -bodyHalfHeight; dy <= bodyHalfHeight; dy++) {
-      const y = hh + dy;
-      if (y < 0 || y >= sh) continue;
-      const edgeDist = Math.abs(dy) / Math.max(bodyHalfHeight, 1);
-      let color;
-      if (dy > bodyHalfHeight * 0.3) color = '#E8E8E8'; // white belly
-      else if (edgeDist > 0.8) color = '#3A3A5A'; // dark outline
-      else if (dy < -bodyHalfHeight * 0.2) color = '#4A5A7A'; // darker top
-      else color = '#5A6A8A'; // blue-grey main
-      drawPixel(cx, x, y, color, ps);
+  // === PASS 1: body ===
+  for (let i = 0; i < bodyEnd; i++) {
+    const t = i / bodyEnd;
+    const th = Math.floor(topH(t));
+    const bh = Math.floor(botH(t));
+    if (th < 1 && bh < 1) continue;
+    const cy = cyAt(t);
+    const X = sx(i);
+    const sl = shadeLine(t);
+    const specDy = -Math.round(th * 0.52);
+    for (let dy = -th; dy <= bh; dy++) {
+      const y = Math.round(cy + dy);
+      if (y < 0 || y >= H) continue;
+      const ny = dy < 0 ? dy / Math.max(1, th) : dy / Math.max(1, bh);
+      let col;
+      if (dy === -th || dy === bh || t < 0.02) col = S.out;
+      else if (ny < -0.62) col = S.dk;
+      else if (ny < -0.06) col = S.md;
+      else if (ny < sl) col = S.lt;
+      else if (ny < 0.86) col = S.belly;
+      else col = S.bshad;
+      if (col !== S.out && th > 3 && dy === specDy && i % 2 === 0 && t > 0.14 && t < 0.52) col = S.hi;
+      drawPixel(cx, X, y, col, ps);
     }
   }
 
-  // Dorsal fin (triangular, menacing) - positioned at ~30% from head
-  const finX = facingLeft ? Math.floor(sw * 0.30) : Math.floor(sw * 0.70);
-  const finWag = Math.sin(af * (TAU / SHARK_ANIM_FRAMES)) * 0.5;
-  for (let i = 0; i < 12; i++) {
-    for (let j = 0; j < 12 - i; j++) {
-      const fx = finX - 3 + j;
-      const fy = hh - Math.floor(sh * 0.75 * 0.75) - i + finWag;
-      if (fx >= 0 && fx < sw && fy >= 0) {
-        drawPixel(cx, fx, fy, i < 2 ? '#2A2A4A' : '#3A3A5A', ps);
+  // === PASS 2: ampullae of Lorenzini across the snout ===
+  for (let ai = 0; ai < 16; ai++) {
+    const at = 0.015 + spriteHash(ai, 3, 7) * 0.11;
+    const an = (spriteHash(ai, 9, 4) - 0.5) * 1.3;
+    const ay = Math.round(cyAt(at) + an * topH(at));
+    if (ay > 0 && ay < H) drawPixel(cx, sx(Math.round(at * bodyEnd)), ay, S.dk, ps);
+  }
+
+  // === PASS 3: five slanted gill slits, shortening toward the rear ===
+  for (let g = 0; g < 5; g++) {
+    const gt = 0.255 + g * 0.030;
+    const gcy = cyAt(gt);
+    const gTop = -topH(gt) * 0.44;
+    const gBot = botH(gt) * (0.20 - g * 0.02);
+    for (let gd = gTop; gd <= gBot; gd += 1) {
+      const gn = gd / Math.max(1, topH(gt));
+      const gy = Math.round(gcy + gd);
+      if (gy > 0 && gy < H) {
+        drawPixel(cx, sx(Math.round(gt * bodyEnd + gn * 2.4 + gn * gn * 1.4)), gy, S.dk, ps);
       }
     }
   }
 
-  // Pectoral fins (small, on each side at ~40%)
-  const pfinX = facingLeft ? Math.floor(sw * 0.42) : Math.floor(sw * 0.58);
-  for (let i = 0; i < 6; i++) {
-    const pfDir = facingLeft ? 1 : -1;
-    drawPixel(cx, pfinX + pfDir * i, hh + 8 + i, '#4A5A7A', ps);
-    drawPixel(cx, pfinX + pfDir * i, hh + 9 + i, '#3A3A5A', ps);
+  // === PASS 4: first dorsal (falcate, concave trailing edge) + second dorsal ===
+  const d0 = 0.33, d1 = 0.51, dMax = 10;
+  for (let t2 = d0; t2 < d1; t2 += 1 / bodyEnd) {
+    const u = (t2 - d0) / (d1 - d0);
+    const fh = Math.round(dMax * (u < 0.28
+      ? Math.pow(u / 0.28, 0.65)
+      : Math.pow(1 - (u - 0.28) / 0.72, 1.55)));
+    if (fh < 1) continue;
+    const bi = Math.round(t2 * bodyEnd);
+    const bY = Math.round(cyAt(t2) - topH(t2));
+    for (let k = 0; k < fh; k++) {
+      const yy = bY - k;
+      if (yy < 0) continue;
+      const edge = k === fh - 1 || k === 0;
+      drawPixel(cx, sx(bi), yy, edge ? S.out : (k > fh - 4 ? S.dk : (bi % 2 === 0 ? S.md : S.dk)), ps);
+    }
+  }
+  for (let t3 = 0.60; t3 < 0.67; t3 += 1 / bodyEnd) {
+    const fh2 = Math.round(5 * Math.sin(Math.pow((t3 - 0.60) / 0.07, 0.6) * Math.PI));
+    const bi2 = Math.round(t3 * bodyEnd);
+    const bY2 = Math.round(cyAt(t3) - topH(t3));
+    for (let k2 = 0; k2 < fh2; k2++) {
+      const y2 = bY2 - k2;
+      if (y2 < 0) continue;
+      drawPixel(cx, sx(bi2), y2, k2 === fh2 - 1 ? S.out : S.dk, ps);
+    }
   }
 
-  // === TAIL FIN - Large, prominent forked caudal fin ===
-  const tailWag = Math.sin(af * (TAU / SHARK_ANIM_FRAMES)) * 3;
-  const tailStart = facingLeft ? Math.floor(sw * 0.63) : Math.floor(sw * 0.37);
-  const td = facingLeft ? 1 : -1;
-
-  // Tail stalk (narrow connecting piece from body to fork, 8 pixels long)
-  for (let i = 0; i < 8; i++) {
-    const tx = tailStart + td * i;
-    // Stalk narrows from 3px to 2px height
-    const stalkH = Math.max(1, 3 - Math.floor(i / 3));
-    for (let dy = -stalkH; dy <= stalkH; dy++) {
-      if (tx >= 0 && tx < sw) {
-        drawPixel(cx, tx, hh + dy + tailWag * 0.3, dy === 0 ? '#5A6A8A' : '#4A5A7A', ps);
+  // === PASS 5: pectoral fin (long, swept back and down) + pelvic + anal ===
+  const pBaseI = Math.round(0.30 * bodyEnd);
+  const pBaseY = Math.round(cyAt(0.30) + botH(0.30) * 0.72);
+  for (let pk = 0; pk < 15; pk++) {
+    const pu = pk / 15;
+    const pI = pBaseI + Math.round(pk * 0.90);
+    const pY = Math.round(pBaseY + pk * 0.55);
+    const thick = Math.max(1, Math.round((1 - Math.pow(pu, 0.7)) * 6));
+    for (let q = 0; q < thick; q++) {
+      const yv = pY - q;
+      if (yv < 0 || yv >= H) continue;
+      drawPixel(cx, sx(pI), yv, (q === thick - 1 && pk > 1) ? S.lt : (pk % 2 === 0 ? S.md : S.dk), ps);
+    }
+    if (pY + 1 < H) drawPixel(cx, sx(pI), pY + 1, S.out, ps);
+  }
+  function smallFin(t0, len, drop) {
+    const bI = Math.round(t0 * bodyEnd);
+    const bY = Math.round(cyAt(t0) + botH(t0));
+    for (let k = 0; k < len; k++) {
+      const yv = bY + Math.round(k * drop);
+      const th2 = Math.max(1, Math.round((1 - k / len) * 3));
+      for (let q2 = 0; q2 < th2; q2++) {
+        const y3 = yv + q2;
+        if (y3 >= H) continue;
+        drawPixel(cx, sx(bI + k), y3, q2 === th2 - 1 ? S.out : S.dk, ps);
       }
     }
   }
+  smallFin(0.50, 7, 0.55); // pelvic
+  smallFin(0.63, 6, 0.50); // anal
 
-  // Upper fork of tail (sweeps up and back)
-  for (let i = 0; i < 20; i++) {
-    const tx = tailStart + td * (8 + i);
-    if (tx < 0 || tx >= sw) continue;
-    const spread = i * 0.9;
-    const thickness = Math.max(1, 4 - Math.floor(i / 6));
-    for (let dy = 0; dy < thickness; dy++) {
-      const ty = Math.floor(hh - 1 - spread + tailWag + dy);
-      if (ty >= 0 && ty < sh) {
-        const color = dy === 0 ? '#6A7A9A' : (i > 16 ? '#8A9ABA' : '#4A5A7A');
-        drawPixel(cx, tx, ty, color, ps);
-      }
+  // === PASS 6: heterocercal caudal fin — long notched upper lobe, short lower lobe ===
+  const tStart = bodyEnd;
+  const tcy = cyAt(1.0);
+  const upLen = W - tStart;
+  const loLen = Math.round(upLen * 0.52);
+  for (let ui = 0; ui < upLen; ui++) {
+    const uu = ui / upLen;
+    let lead = -ui * 0.62;
+    let trail = -ui * 0.24;
+    if (uu > 0.72) trail = -ui * 0.24 - ((uu - 0.72) / 0.28) * ui * 0.28; // terminal notch
+    if (uu > 0.94) lead = -ui * 0.62 + ((uu - 0.94) / 0.06) * ui * 0.14;
+    const TX = sx(tStart + ui);
+    for (let dyu = Math.round(lead); dyu <= Math.round(trail); dyu++) {
+      const yu = Math.round(tcy + dyu);
+      if (yu < 0 || yu >= H) continue;
+      const edge = dyu === Math.round(lead) || dyu === Math.round(trail);
+      drawPixel(cx, TX, yu, edge ? S.out : (Math.round(Math.abs(dyu) * 0.8) % 2 === 0 ? S.md : S.dk), ps);
+    }
+  }
+  for (let li = 0; li < loLen; li++) {
+    const lu = li / loLen;
+    let lLead = li * 0.62;
+    const lTrail = li * 0.18;
+    if (lu > 0.80) lLead = li * 0.62 - ((lu - 0.80) / 0.20) * li * 0.20;
+    const LX = sx(tStart + li);
+    for (let dyl = Math.round(lTrail); dyl <= Math.round(lLead); dyl++) {
+      const yl = Math.round(tcy + dyl);
+      if (yl < 0 || yl >= H) continue;
+      const edge2 = dyl === Math.round(lLead) || dyl === Math.round(lTrail);
+      drawPixel(cx, LX, yl, edge2 ? S.out : (Math.round(Math.abs(dyl) * 0.8) % 2 === 0 ? S.md : S.dk), ps);
+    }
+  }
+  for (let fi = 0; fi < Math.round(upLen * 0.3); fi++) { // fill the fork near the stalk
+    const FX = sx(tStart + fi);
+    for (let fd = Math.round(-fi * 0.24); fd <= Math.round(fi * 0.18); fd++) {
+      const fy = Math.round(tcy + fd);
+      if (fy < 0 || fy >= H) continue;
+      drawPixel(cx, FX, fy, S.md, ps);
     }
   }
 
-  // Lower fork of tail (sweeps down and back)
-  for (let i = 0; i < 20; i++) {
-    const tx = tailStart + td * (8 + i);
-    if (tx < 0 || tx >= sw) continue;
-    const spread = i * 0.9;
-    const thickness = Math.max(1, 4 - Math.floor(i / 6));
-    for (let dy = 0; dy < thickness; dy++) {
-      const ty = Math.floor(hh + 1 + spread + tailWag - dy);
-      if (ty >= 0 && ty < sh) {
-        const color = dy === 0 ? '#6A7A9A' : (i > 16 ? '#8A9ABA' : '#4A5A7A');
-        drawPixel(cx, tx, ty, color, ps);
-      }
+  // === PASS 7: underslung jaw — the snout overhangs, teeth hang from the jaw line ===
+  const gape = atk ? 2 : (af % SHARK_ANIM_FRAMES < 6 ? 1 : 0);
+  const jawPts = [];
+  for (let jt = 0.025; jt < 0.215; jt += 0.008) {
+    const jy = Math.round(cyAt(jt) + botH(jt) * (0.30 + Math.pow((jt - 0.025) / 0.19, 0.8) * 0.42));
+    const jx = Math.round(jt * bodyEnd);
+    jawPts.push([jx, jy]);
+    if (jy > 0 && jy < H) drawPixel(cx, sx(jx), jy, S.out, ps);
+    if (jy + 1 < H) drawPixel(cx, sx(jx), jy + 1, S.gum, ps);
+  }
+  for (let ji = 0; ji < jawPts.length; ji += 3) {
+    const jp = jawPts[ji];
+    if (jp[1] - 1 > 0) drawPixel(cx, sx(jp[0]), jp[1] - 1, S.tooth, ps);
+    if (gape > 0 && jp[1] + 1 + gape < H) {
+      if (jp[1] + gape < H) drawPixel(cx, sx(jp[0]), jp[1] + gape, '#2A0C10', ps);
+      drawPixel(cx, sx(jp[0]), jp[1] + 1 + gape, S.tooth, ps);
     }
   }
 
-  // Tail fork center fill (the area between the two forks near the stalk)
-  for (let i = 0; i < 10; i++) {
-    const tx = tailStart + td * (8 + i);
-    if (tx < 0 || tx >= sw) continue;
-    const upperY = hh - 1 - i * 0.9 + tailWag;
-    const lowerY = hh + 1 + i * 0.9 + tailWag;
-    for (let y = Math.ceil(upperY); y <= Math.floor(lowerY); y++) {
-      if (y >= 0 && y < sh) {
-        drawPixel(cx, tx, y, '#5A6A8A', ps);
-      }
+  // === PASS 8: eye — small and black; red only while a bite is arming ===
+  const et = 0.135;
+  const eI = Math.round(et * bodyEnd);
+  const eY = Math.round(cyAt(et) - topH(et) * 0.42);
+  for (let ox = -1; ox <= 1; ox++) {
+    for (let oy = -1; oy <= 1; oy++) {
+      const yy3 = eY + oy;
+      if (yy3 < 0 || yy3 >= H) continue;
+      const centre = ox === 0 && oy === 0;
+      drawPixel(cx, sx(eI + ox), yy3, centre ? (atk ? '#E01818' : '#08070C') : S.dk, ps);
     }
   }
-
-  // Eye (menacing, red) - larger for bigger sprite
-  const eyeX = facingLeft ? Math.floor(sw * 0.10) : Math.floor(sw * 0.86);
-  for (let dy = -2; dy <= 1; dy++) {
-    for (let dx = 0; dx <= 2; dx++) {
-      drawPixel(cx, eyeX + dx, hh - 3 + dy, '#FFFFFF', ps);
-    }
-  }
-  // Red pupil
-  const pupilDx = facingLeft ? 0 : 2;
-  drawPixel(cx, eyeX + pupilDx, hh - 4, '#FF0000', ps);
-  drawPixel(cx, eyeX + pupilDx, hh - 3, '#CC0000', ps);
-  drawPixel(cx, eyeX + pupilDx + (facingLeft ? 1 : -1), hh - 4, '#DD0000', ps);
-  drawPixel(cx, eyeX + pupilDx + (facingLeft ? 1 : -1), hh - 3, '#AA0000', ps);
-
-  // Teeth - longer row for bigger mouth
-  const mouthY = hh + 3;
-  const mouthStart = facingLeft ? 4 : sw - 22;
-  const toothFrame = (af % 4 < 2) ? 0 : 1;
-  for (let i = 0; i < 9; i++) {
-    drawPixel(cx, mouthStart + i * 2, mouthY + toothFrame, '#FFFFFF', ps);
-    drawPixel(cx, mouthStart + i * 2, mouthY + 1 + toothFrame, '#FFFFFF', ps);
-    drawPixel(cx, mouthStart + i * 2, mouthY + 2, '#FF3333', ps);
+  if (atk) {
+    drawPixel(cx, sx(eI), eY - 1, '#8E0C0C', ps);
+    drawPixel(cx, sx(eI), eY + 1, '#8E0C0C', ps);
+  } else {
+    drawPixel(cx, sx(eI + (facingLeft ? -1 : 1)), eY - 1, '#FFFFFF', ps);
   }
 
-  // Gill slits - positioned and scaled
-  const gillX = facingLeft ? Math.floor(sw * 0.20) : Math.floor(sw * 0.74);
-  for (let i = 0; i < 4; i++) {
-    for (let dy = -3; dy <= 3; dy++) {
-      drawPixel(cx, gillX + i * 3, hh + dy, '#3A3A5A', ps);
-    }
+  // === PASS 9: caudal keel ===
+  for (let ki = Math.round(bodyEnd * 0.90); ki < bodyEnd; ki++) {
+    drawPixel(cx, sx(ki), Math.round(cyAt(ki / bodyEnd)), S.hi, ps);
   }
-
-  // Nose highlight
-  const noseX = facingLeft ? 2 : sw - 4;
-  drawPixel(cx, noseX, hh - 1, '#7A8AAA', ps);
-  drawPixel(cx, noseX, hh, '#7A8AAA', ps);
 
   cacheSprite(key, c);
   return { canvas: c, w: sw * ps, h: sh * ps };
+}
+
+// Electric eel. Continuous per-column silhouette, moray dorsal ribbon, mottled flank.
+// Charge reads as a pulse travelling head-to-tail rather than a whole-body strobe.
+const EEL_PAL = {
+  hi: '#C9D96B', lt: '#8AAE41', md: '#587D2C', dk: '#35521F', out: '#152410',
+  belly: '#DFDCA4', elec: '#FBFF9C', arc: '#FFFFFF',
+};
+const EEL_SPRITE_W = 34; // logical pixels; * ps = the blit size
+const EEL_SPRITE_H = 16;
+
+function createEel(frame, facingLeft, charged) {
+  const ps = 2;
+  const af = frame % EEL_ANIM_FRAMES;
+  const chg = !!charged;
+  const key = `eel_${af}_${facingLeft}_${chg}`;
+  const cached = spriteCache.get(key);
+  if (cached) return { canvas: cached, w: EEL_SPRITE_W * ps, h: EEL_SPRITE_H * ps };
+
+  const W = EEL_SPRITE_W, H = EEL_SPRITE_H;
+  const c = document.createElement('canvas');
+  c.width = W * ps;
+  c.height = H * ps;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const E = EEL_PAL;
+  const hh = H / 2;
+  const phase = af * (TAU / EEL_ANIM_FRAMES);
+  const pulse = af / EEL_ANIM_FRAMES; // charge position, head (0) to tail (1)
+  const sx = (i) => (facingLeft ? i : W - 1 - i);
+  const cy = (u) => hh + Math.sin(phase - u * TAU * 1.35) * 3.1 * (0.30 + 0.70 * u);
+  function half(u) {
+    if (u < 0.07) return 1.1 + (u / 0.07) * 1.7;              // wedge head
+    if (u < 0.26) return 2.8 + ((u - 0.07) / 0.19) * 0.6;     // thickest behind the head
+    return Math.max(0.5, 3.4 - Math.pow((u - 0.26) / 0.74, 0.85) * 3.0);
+  }
+
+  for (let i = 0; i < W; i++) {
+    const u = i / (W - 1);
+    const hI = Math.round(half(u));
+    const ccy = cy(u);
+    const X = sx(i);
+
+    // Dorsal ribbon runs the whole length; anal ribbon on the rear half
+    const ribTop = Math.round(ccy - hI - 1);
+    if (u > 0.10 && ribTop >= 0 && ribTop < H) drawPixel(cx, X, ribTop, i % 2 === 0 ? E.lt : E.md, ps);
+    if (u > 0.52) {
+      const ribBot = Math.round(ccy + hI + 1);
+      if (ribBot < H) drawPixel(cx, X, ribBot, i % 2 === 0 ? E.md : E.dk, ps);
+    }
+
+    for (let dy = -hI; dy <= hI; dy++) {
+      const y = Math.round(ccy + dy);
+      if (y < 0 || y >= H) continue;
+      const ny = dy / Math.max(1, hI);
+      let col;
+      if (dy === -hI || dy === hI) col = E.out;
+      else if (ny < -0.42) col = E.dk;
+      else if (ny < 0.14) col = E.md;
+      else if (ny < 0.62) col = E.lt;
+      else col = E.belly;
+      if (col !== E.out && spriteHash(Math.floor(i / 2), Math.floor((dy + hI) / 2), 11) > 0.68) {
+        col = ny < 0.2 ? E.dk : E.md;
+      }
+      if (chg) {
+        const d = Math.abs(u - pulse);
+        if (d < 0.16) col = d < 0.07 ? E.elec : E.hi;
+      }
+      drawPixel(cx, X, y, col, ps);
+    }
+  }
+
+  // Head: gape line and eye
+  const hcy = cy(0.055);
+  const hI2 = Math.round(half(0.055));
+  for (let m = 0; m < 4; m++) {
+    const my = Math.round(hcy + hI2 * 0.35);
+    if (my > 0 && my < H) drawPixel(cx, sx(1 + m), my, E.out, ps);
+  }
+  const eY = Math.round(cy(0.05) - 1);
+  if (eY > 0 && eY < H) {
+    drawPixel(cx, sx(2), eY, '#0A0A08', ps);
+    drawPixel(cx, sx(3), eY, E.hi, ps);
+  }
+
+  // Discharge arcs, deterministic per frame so the sprite stays cacheable
+  if (chg) {
+    for (let s2 = 0; s2 < 5; s2++) {
+      const au = spriteHash(s2, af, 21);
+      const ay = Math.round(cy(au) + (spriteHash(s2, af, 33) - 0.5) * 10);
+      if (ay > 0 && ay < H) drawPixel(cx, sx(Math.round(au * (W - 1))), ay, E.arc, ps);
+    }
+  }
+
+  cacheSprite(key, c);
+  return { canvas: c, w: W * ps, h: H * ps };
+}
+
+// Starfish power-up. Tapered arms with rounded tips, a raised central disc,
+// ossicle bumps along each arm ridge, and a madreporite. Arms flex; they don't spin.
+const STAR_PAL = { hi: '#FFCE96', lt: '#F09A50', md: '#DA652C', dk: '#A63A18', out: '#571407', deep: '#7C2410' };
+const STAR_SPRITE_SIZE = 26;
+
+function createStarfish(frame) {
+  const ps = 2;
+  const af = frame % STAR_ANIM_FRAMES;
+  const key = `starfish_${af}`;
+  const cached = spriteCache.get(key);
+  if (cached) return { canvas: cached, w: STAR_SPRITE_SIZE * ps, h: STAR_SPRITE_SIZE * ps };
+
+  const N = STAR_SPRITE_SIZE;
+  const c = document.createElement('canvas');
+  c.width = N * ps;
+  c.height = N * ps;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const S = STAR_PAL;
+  const phase = af * (TAU / STAR_ANIM_FRAMES);
+  const cxp = (N - 1) / 2, cyp = (N - 1) / 2;
+  const R = 11.4;
+
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const dx = x - cxp, dy = y - cyp;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      if (r > R + 1.4) continue;
+      const a = Math.atan2(dy, dx);
+
+      // Nearest of the five arms
+      let best = 1e9, armI = 0;
+      for (let k = 0; k < 5; k++) {
+        const aa = -Math.PI / 2 + k * (TAU / 5);
+        const d = Math.atan2(Math.sin(a - aa), Math.cos(a - aa));
+        if (Math.abs(d) < Math.abs(best)) { best = d; armI = k; }
+      }
+
+      const u = Math.min(1, r / R);
+      const curl = Math.sin(phase + armI * 1.25) * 0.13; // slow flex, arms out of phase
+      const arc = Math.abs(best - curl * u) * r;
+      let hw = Math.pow(1 - u, 0.60) * 4.7 + 0.9;
+      if (u > 0.88) hw *= Math.sqrt(Math.max(0, 1 - Math.pow((u - 0.88) / 0.12, 2))) * 0.9 + 0.1; // rounded tip
+      const inArm = r <= R && arc <= hw;
+      const inDisc = r <= 4.3;
+      if (!inArm && !inDisc) continue;
+
+      const d2 = inDisc ? Math.min(1, r / 4.3) * 0.55 : arc / Math.max(0.6, hw);
+      let col;
+      if (d2 > 0.88 || r > R - 0.6) col = S.out;
+      else if (d2 > 0.66) col = S.dk;
+      else if (d2 > 0.34) col = S.md;
+      else col = S.lt;
+      if (!inDisc && u > 0.84) col = d2 > 0.55 ? S.out : S.dk;
+      if (!inDisc && d2 < 0.42 && spriteHash(x, y, 5) > 0.60) col = S.hi; // ossicles
+      if (inDisc && d2 < 0.30) col = S.md;
+      drawPixel(cx, x, y, col, ps);
+    }
+  }
+
+  // Madreporite
+  drawPixel(cx, Math.round(cxp + 2), Math.round(cyp - 2), S.deep, ps);
+  drawPixel(cx, Math.round(cxp + 3), Math.round(cyp - 2), S.deep, ps);
+  drawPixel(cx, Math.round(cxp + 2), Math.round(cyp - 1), S.deep, ps);
+
+  cacheSprite(key, c);
+  return { canvas: c, w: N * ps, h: N * ps };
 }
 
 // ============================================================
@@ -1289,7 +1629,6 @@ const starfish = {
   width: 24,
   height: 24,
   bobOffset: 0,
-  rotation: 0,
 };
 let starfishImmunityTimer = 0;
 const STARFISH_IMMUNITY_DURATION = 36 * 20; // 20 seconds at 36fps
@@ -1542,7 +1881,7 @@ function spawnEnemy() {
     points: def.points,
     sizeLevel: def.sizeLevel,
     colorIdx: Math.floor(Math.random() * FISH_PALETTES.length),
-    patternIdx: Math.floor(Math.random() * FISH_SHAPES.length),
+    patternIdx: Math.floor(Math.random() * FISH_MORPH_COUNT),
     dartTimer: 0,
     frozenTimer: 0,
     isEel: false,
@@ -1550,8 +1889,7 @@ function spawnEnemy() {
 }
 
 // Electric Eel
-const EEL_WIDTH = 60;
-const EEL_HEIGHT = 16;
+const EEL_WIDTH = 60; // spawn/despawn margin; the sprite sizes itself
 const EEL_SPEED = 1.0;
 const EEL_SHOCK_RADIUS = 70;
 const EEL_FREEZE_DURATION = 36 * 3; // 3 seconds at 36fps
@@ -1695,67 +2033,16 @@ function drawEels() {
       ctx.restore();
     }
 
-    // Eel body — sinuous shape
-    const segments = 8;
-    const segLen = EEL_WIDTH / segments;
-    const dir = eel.facingLeft ? -1 : 1;
-
-    ctx.save();
-    // Body segments
-    for (let s = 0; s < segments; s++) {
-      const t = s / segments;
-      const wave = Math.sin(eel.frame * 0.12 + s * 0.8) * 4;
-      const sx = ex - dir * (s - segments / 2) * segLen;
-      const sy = ey + wave;
-      const segW = segLen + 1;
-      const segH = EEL_HEIGHT * (1 - t * 0.4);
-
-      // Body color with electric glow
-      const glow = eel.shockFlash > 0 ? 0.5 + Math.sin(frameCount * 1.5) * 0.5 : 0;
-      const r = Math.floor(40 + glow * 200);
-      const g = Math.floor(80 + glow * 175);
-      const b2 = Math.floor(40 + t * 80);
-      ctx.fillStyle = `rgb(${r},${g},${b2})`;
-      ctx.fillRect(sx - segW / 2, sy - segH / 2, segW, segH);
-
-      // Yellow stripe down the side
-      ctx.fillStyle = eel.shockFlash > 0 ? '#FFFF66' : '#CCCC33';
-      ctx.fillRect(sx - segW / 2, sy - 1, segW, 2);
-    }
-
-    // Head
-    const headX = ex + dir * (segments / 2) * segLen;
-    const headWave = Math.sin(eel.frame * 0.12) * 4;
-    ctx.fillStyle = eel.shockFlash > 0 ? '#FFFF44' : '#556633';
-    ctx.beginPath();
-    ctx.arc(headX, ey + headWave, EEL_HEIGHT / 2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Eye
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.arc(headX + dir * 3, ey + headWave - 2, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#111111';
-    ctx.beginPath();
-    ctx.arc(headX + dir * 4, ey + headWave - 2, 1.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Electric sparks around eel
-    if (frameCount % 8 < 4) {
-      ctx.strokeStyle = '#FFFF44';
-      ctx.lineWidth = 1;
-      for (let sp = 0; sp < 3; sp++) {
-        const sx2 = ex + (Math.random() - 0.5) * EEL_WIDTH;
-        const sy2 = ey + (Math.random() - 0.5) * 20;
-        ctx.beginPath();
-        ctx.moveTo(sx2, sy2);
-        ctx.lineTo(sx2 + (Math.random() - 0.5) * 10, sy2 + (Math.random() - 0.5) * 10);
-        ctx.stroke();
-      }
-    }
-
-    ctx.restore();
+    // Body — a cached pixel sprite, blitted like every other entity.
+    // The undulation runs one cycle per 6 update ticks * EEL_ANIM_FRAMES.
+    const af = Math.floor(eel.frame / 6);
+    const spriteData = createEel(af, eel.facingLeft, eel.shockFlash > 0);
+    ctx.drawImage(spriteData.canvas,
+      ex - spriteData.w / 2,
+      ey - spriteData.h / 2,
+      spriteData.w,
+      spriteData.h
+    );
   });
 }
 
@@ -2294,7 +2581,7 @@ function eatFish(e, index) {
   // Effects
   sfxEat();
   const pal = FISH_PALETTES[e.colorIdx % FISH_PALETTES.length];
-  spawnEatParticles(e.x, e.y, pal ? pal.body : '#FFFFFF');
+  spawnEatParticles(e.x, e.y, pal ? pal.md : '#FFFFFF');
   const comboText = comboMultiplier > 1 ? `+${pts} x${comboMultiplier}!` : `+${pts}`;
   spawnScorePopup(e.x, e.y - 20, comboText);
 }
@@ -2438,7 +2725,6 @@ function spawnStarfish() {
   starfish.y = 60 + Math.random() * (GH - 180);
   starfish.vx = fromLeft ? 0.6 + Math.random() * 0.4 : -(0.6 + Math.random() * 0.4);
   starfish.bobOffset = Math.random() * Math.PI * 2;
-  starfish.rotation = 0;
 }
 
 function updateStarfish() {
@@ -2452,7 +2738,6 @@ function updateStarfish() {
   if (starfish.active) {
     starfish.x += starfish.vx;
     starfish.y += Math.sin(starfish.bobOffset + frameCount * 0.03) * 0.4;
-    starfish.rotation += 0.015;
     // Remove if off screen
     if ((starfish.vx > 0 && starfish.x > GW + 40) || (starfish.vx < 0 && starfish.x < -40)) {
       starfish.active = false;
@@ -2475,7 +2760,7 @@ function checkStarfishCollision() {
 function collectStarfish() {
   starfish.active = false;
   sfxPowerUp();
-  spawnEatParticles(starfish.x, starfish.y, '#FF88FF');
+  spawnEatParticles(starfish.x, starfish.y, '#F09A50');
   spawnScorePopup(starfish.x, starfish.y - 20, 'STARFISH SHIELD!');
   starfishImmunityTimer = STARFISH_IMMUNITY_DURATION;
   flashTimer = 20;
@@ -2487,60 +2772,24 @@ function drawStarfish() {
   const px = starfish.x;
   const py = starfish.y + bob;
 
-  ctx.save();
-  ctx.translate(px, py);
-  ctx.rotate(starfish.rotation);
-
   // Glow
-  const glowAlpha = 0.2 + Math.sin(frameCount * 0.1) * 0.1;
-  ctx.globalAlpha = glowAlpha;
-  ctx.fillStyle = '#FF88FF';
+  ctx.save();
+  ctx.globalAlpha = 0.2 + Math.sin(frameCount * 0.1) * 0.1;
+  ctx.fillStyle = '#FFAA55';
   ctx.beginPath();
-  ctx.arc(0, 0, 18, 0, Math.PI * 2);
+  ctx.arc(px, py, 18, 0, Math.PI * 2);
   ctx.fill();
-  ctx.globalAlpha = 1;
-
-  // Draw 5-pointed star shape
-  const outerR = 11;
-  const innerR = 5;
-  ctx.fillStyle = '#FF6699';
-  ctx.strokeStyle = '#CC3366';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 === 0 ? outerR : innerR;
-    const angle = (Math.PI / 2) + (i * Math.PI / 5);
-    const sx = Math.cos(angle) * r;
-    const sy = -Math.sin(angle) * r;
-    if (i === 0) ctx.moveTo(sx, sy);
-    else ctx.lineTo(sx, sy);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Center dot
-  ctx.fillStyle = '#FFAACC';
-  ctx.beginPath();
-  ctx.arc(0, 0, 3, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Small dots on each arm
-  ctx.fillStyle = '#FFCCDD';
-  for (let i = 0; i < 5; i++) {
-    const angle = (Math.PI / 2) + (i * 2 * Math.PI / 5);
-    const dx = Math.cos(angle) * 7;
-    const dy = -Math.sin(angle) * 7;
-    ctx.beginPath();
-    ctx.arc(dx, dy, 1.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
   ctx.restore();
+
+  // Body — cached pixel sprite; arms flex over STAR_ANIM_FRAMES, no spin
+  const spriteData = createStarfish(frameCount >> 1);
+  const dw = starfish.width + 2;
+  const dh = starfish.height + 2;
+  ctx.drawImage(spriteData.canvas, px - dw / 2, py - dh / 2, dw, dh);
 
   // Floating arrow
   const arrowBob = Math.sin(frameCount * 0.12) * 3;
-  ctx.fillStyle = '#FF88FF';
+  ctx.fillStyle = '#FFAA55';
   ctx.beginPath();
   ctx.moveTo(px, py - 18 + arrowBob);
   ctx.lineTo(px - 4, py - 24 + arrowBob);
@@ -2829,7 +3078,7 @@ function drawHUD() {
     const secs = Math.ceil(starfishImmunityTimer / 36);
     const blink = starfishImmunityTimer < 36 * 5 ? (frameCount % 10 < 5) : true;
     if (blink) {
-      ctx.fillStyle = '#FF88FF';
+      ctx.fillStyle = '#FFAA55';
       ctx.font = 'bold 12px monospace';
       ctx.textAlign = 'left';
       ctx.fillText(`SHIELD: ${secs}s`, 12, 68);
@@ -2931,8 +3180,8 @@ function drawPlayer() {
     const glowSize = Math.max(player.width, player.height) * 0.75;
     ctx.save();
     ctx.globalAlpha = pulse;
-    ctx.fillStyle = '#FF88FF';
-    ctx.shadowColor = '#FF88FF';
+    ctx.fillStyle = '#FFAA55';
+    ctx.shadowColor = '#FFAA55';
     ctx.shadowBlur = 20;
     ctx.beginPath();
     ctx.ellipse(player.x, player.y, glowSize, glowSize * 0.7, 0, 0, Math.PI * 2);
@@ -2954,7 +3203,7 @@ function drawPlayer() {
     // Overlay bright tint
     ctx.globalAlpha = 0.25 + Math.sin(frameCount * 0.12) * 0.1;
     ctx.globalCompositeOperation = 'screen';
-    ctx.fillStyle = '#FF99FF';
+    ctx.fillStyle = '#FFC58A';
     ctx.fillRect(
       player.x - player.width / 2,
       player.y - player.height / 2,
@@ -3000,7 +3249,7 @@ function drawShark() {
     ctx.globalAlpha = 0.5 + Math.sin(frameCount * 0.8) * 0.5;
   }
 
-  const spriteData = createShark(frameCount, shark.facingLeft);
+  const spriteData = createShark(frameCount, shark.facingLeft, shark.phase === 'charge');
   ctx.drawImage(spriteData.canvas,
     shark.x - shark.width / 2,
     shark.y - shark.height / 2,
@@ -3073,7 +3322,7 @@ function initDemo() {
       frame: Math.floor(Math.random() * 100),
       facingLeft: !fromLeft,
       colorIdx: Math.floor(Math.random() * FISH_PALETTES.length),
-      patternIdx: Math.floor(Math.random() * 3),
+      patternIdx: Math.floor(Math.random() * FISH_MORPH_COUNT),
       wobble: Math.random() * Math.PI * 2,
     });
   }
